@@ -1,0 +1,740 @@
+id: cost-latency-routing
+order: 15
+prefix: cost
+title: Cost, Latency & Model Routing
+summary: >-
+  Cost and latency are product requirements, not afterthoughts. Measure cost per
+  successful outcome per intent, give every stage a latency budget, route each step to the
+  smallest model that passes its evals, cache what is general, batch what can wait, and
+  never let an optimisation ship without a quality check.
+scenarios:
+  - id: cost-01
+    title: No one knows what a resolved card dispute costs
+    domain: fintech
+    severity: medium
+    tags: [unit economics, cost per intent]
+    scenario: >-
+      A card issuer's AI assistant costs $140k a month. Finance asks whether it pays for
+      itself. The team can report total tokens but not cost per intent, cost per resolved
+      dispute, or how it compares with an agent-handled contact.
+    analogy: >-
+      A restaurant that knows its total food bill but not what each dish costs to make.
+    breaks:
+      - Cost isn't attributed to intents or outcomes.
+      - No comparison with the human baseline.
+      - Optimisation targets are guesses.
+    root_cause: >-
+      No unit economics.
+    where: Metering and analytics.
+    fix:
+      - Tag cost per request with intent, outcome and version, and compute cost per successful outcome by intent.
+      - Compare with fully loaded human cost per contact for the same intent.
+      - Prioritise optimisation on high-volume, low-margin intents.
+    detect:
+      - Cost per outcome dashboard reviewed monthly.
+    tradeoff: >-
+      Outcome attribution needs joins to downstream systems.
+    variant: >-
+      Telco: a carrier can't tell whether its bot is cheaper than care agents for plan
+      changes versus bill explanations.
+    line: Know the cost of a success, per intent.
+    related: [ops-09, obs-05]
+    diagram:
+      bad_label: "Anti-pattern: only total spend is known"
+      good_label: "Fix: cost per successful outcome by intent"
+      bad: [["$140k/month", "Total"], ["Per intent?", "Unknown"], ["Vs agents?", "Unknown"], ["Guessing", "Priorities"]]
+      good: [["Tag cost", "Intent, outcome"], ["Cost/success", "Per intent"], ["Human baseline", "Compare"], ["Prioritise", "High volume"]]
+
+  - id: cost-02
+    title: Router sends hard complaints to the small model
+    domain: fintech
+    severity: high
+    tags: [model routing, evaluation, risk]
+    scenario: >-
+      A bank introduces a router that sends "simple" questions to a small model and "complex"
+      ones to a large model, based on message length. Short but serious complaints ("You
+      closed my account and my salary bounced") go to the small model, which handles them
+      poorly. Complaint escalations rise.
+    analogy: >-
+      A hospital triaging patients by how long they talk rather than by symptoms.
+    breaks:
+      - Routing criteria don't reflect difficulty or risk.
+      - The router wasn't evaluated.
+      - High-risk intents can hit the cheap path.
+    root_cause: >-
+      Unvalidated routing heuristics.
+    where: Router design.
+    fix:
+      - Route by intent and risk tier (complaints, vulnerability and disputes always to the stronger path).
+      - Evaluate the router (misroute rate) and each path per intent.
+      - Allow the small model to escalate when uncertain.
+    detect:
+      - Quality by route and intent; escalations after small-model answers.
+    tradeoff: >-
+      Lower savings from routing; safer outcomes.
+    variant: >-
+      Telco: a router sends short outage complaints from business customers to a small
+      model that can't check incident data.
+    line: Route by risk and intent, not by message length.
+    related: [agf-20, eval-09]
+    diagram:
+      bad_label: "Anti-pattern: route by message length"
+      good_label: "Fix: route by intent and risk, evaluated, with escalation"
+      bad: [["Short message", "Serious"], ["Router", "By length"], ["Small model", "Handles it"], ["Escalations", "Rise"]]
+      good: [["Intent + risk", "Router"], ["High risk", "Strong path"], ["Router eval", "Misroutes"], ["Escalate", "If unsure"]]
+
+  - id: cost-03
+    title: Voice agent pauses for 3 seconds before every reply
+    domain: telco
+    severity: high
+    tags: [latency budget, voice, streaming]
+    scenario: >-
+      A carrier's AI voice agent chains speech recognition, an LLM call, a tool call and
+      text-to-speech, each run to completion before the next starts. Callers hear 3 seconds
+      of silence after every sentence and assume the line dropped.
+    analogy: >-
+      A conversation where the other person waits until they've written their whole reply
+      before saying a word.
+    breaks:
+      - No end-to-end latency budget.
+      - Stages run sequentially without streaming.
+      - Tool calls happen on the critical path.
+    root_cause: >-
+      Voice pipeline designed without a latency budget.
+    where: Voice architecture.
+    fix:
+      - Set an end-to-end budget (for example under 800 ms to first audio) and per-stage targets.
+      - Stream ASR partials, stream LLM tokens into TTS by sentence, and use a fast model for the first response.
+      - Prefetch likely tool data (account summary) at call start; use filler acknowledgements while slow tools run.
+    detect:
+      - Time to first audio per turn; caller hang-ups during silence.
+    tradeoff: >-
+      Streaming complicates guardrails; check per sentence.
+    variant: >-
+      FinTech: a bank's voice bot waits for the full balance lookup and answer before
+      speaking.
+    line: In voice, latency is the user experience.
+    related: [tel-08, rag-18]
+    diagram:
+      bad_label: "Anti-pattern: sequential voice pipeline"
+      good_label: "Fix: latency budget, streaming, prefetch"
+      bad: [["ASR", "Full"], ["LLM + tool", "Sequential"], ["TTS", "After all"], ["3 s silence", "Hang-ups"]]
+      good: [["Budget", "800 ms first"], ["Stream", "ASR, LLM, TTS"], ["Prefetch", "Account data"], ["Filler", "While tools run"]]
+
+  - id: cost-04
+    title: Fifteen-thousand-token system prompt for a balance question
+    domain: fintech
+    severity: medium
+    tags: [prompt bloat, context size]
+    scenario: >-
+      A bank's assistant system prompt has grown to 15k tokens covering every product.
+      Ninety percent of conversations are about cards and balances. Each turn pays for the
+      full prompt, and time to first token is 1.8 seconds.
+    analogy: >-
+      Reading the whole employee handbook before answering "what time do you close?"
+    breaks:
+      - One giant prompt for all intents.
+      - Unused instructions cost money and latency.
+      - Attention is diluted.
+    root_cause: >-
+      Prompt bloat.
+    where: Prompt and context design.
+    fix:
+      - Keep a compact core prompt and load product-specific instructions by intent.
+      - Use prompt caching for the stable core.
+      - Measure tokens and latency per intent.
+    detect:
+      - Prompt tokens per turn by intent.
+    tradeoff: >-
+      Intent detection must be reliable.
+    variant: >-
+      Telco: a care bot includes instructions for every device brand in every prompt.
+    line: Load instructions for the job at hand.
+    related: [ctx-05, ctx-06]
+    diagram:
+      bad_label: "Anti-pattern: one 15k-token prompt for everything"
+      good_label: "Fix: compact core plus intent-loaded instructions"
+      bad: [["15k prompt", "All products"], ["90% cards", "Conversations"], ["Pay full", "Every turn"], ["1.8 s TTFT", "Slow"]]
+      good: [["Core prompt", "Compact"], ["By intent", "Load extras"], ["Cache core", "Prefix"], ["Measure", "Per intent"]]
+
+  - id: cost-05
+    title: Prompt caching enabled, but the cache expires between turns
+    domain: telco
+    severity: low
+    tags: [prompt caching, ttl]
+    scenario: >-
+      A carrier enables prompt caching for its care bot. Hit rates are low because the
+      provider's default cache lifetime is a few minutes, and customers often take longer
+      to reply. The team assumed caching would work for whole conversations.
+    analogy: >-
+      A coffee machine that switches off between cups.
+    breaks:
+      - Cache lifetime wasn't understood.
+      - Traffic patterns weren't analysed.
+      - Hit rate wasn't monitored.
+    root_cause: >-
+      Caching enabled without understanding its mechanics.
+    where: Caching configuration.
+    fix:
+      - Check the provider's cache lifetime options and choose them by traffic pattern (longer lifetimes where offered and cost-effective).
+      - Keep the shared prefix identical across all customers so it stays warm from overall traffic.
+      - Monitor cached-token share.
+    detect:
+      - Cache hit rate by time of day and conversation gap.
+    tradeoff: >-
+      Longer cache lifetimes may cost more to write.
+    variant: >-
+      FinTech: a bank's batch jobs run hours apart and never benefit from prompt caching.
+    line: Know how your cache expires before you count the savings.
+    related: [ctx-06, ops-10]
+    diagram:
+      bad_label: "Anti-pattern: assume the cache lasts the conversation"
+      good_label: "Fix: choose lifetime by traffic, shared warm prefix"
+      bad: [["Caching on", "Default"], ["Short TTL", "Minutes"], ["Slow replies", "Customers"], ["Low hits", "Savings lost"]]
+      good: [["TTL options", "Checked"], ["Shared prefix", "Stays warm"], ["Hit rate", "Monitored"], ["Right TTL", "By pattern"]]
+
+  - id: cost-06
+    title: Semantic cache confuses cancel my card with cancel my card payment
+    domain: fintech
+    severity: high
+    tags: [semantic cache, similarity threshold]
+    scenario: >-
+      A bank's semantic cache uses a similarity threshold of 0.88. "How do I cancel my
+      card?" and "How do I cancel a card payment?" exceed it, so customers who want to stop
+      a payment receive instructions for closing their card.
+    analogy: >-
+      A receptionist who answers the question they think you asked because it sounded
+      similar.
+    breaks:
+      - Similar wording, different intents.
+      - Threshold chosen without evaluation.
+      - Cached answers aren't checked against the intent.
+    root_cause: >-
+      Over-aggressive semantic caching.
+    where: Cache design.
+    fix:
+      - Tune thresholds on a labelled set of near-miss pairs, and add intent classification to the cache key.
+      - Cache only for high-volume, stable FAQ intents.
+      - Monitor negative feedback on cache hits.
+    detect:
+      - Feedback and rephrase rate on cached answers.
+    tradeoff: >-
+      Lower hit rates.
+    variant: >-
+      Telco: "How do I block a number?" gets the cached answer for "How do I unblock my
+      number?"
+    line: Similar isn't the same. Key the cache by intent.
+    related: [ctx-17, ops-10]
+    diagram:
+      bad_label: "Anti-pattern: similarity-only cache hits"
+      good_label: "Fix: intent in the key, tuned threshold, FAQ-only"
+      bad: [["'Cancel card?'", "Cached"], ["'Stop payment?'", "Asked"], ["0.88 similar", "Hit"], ["Wrong steps", "Card closed?"]]
+      good: [["Intent key", "Plus text"], ["Tuned", "Near-miss set"], ["FAQ only", "Stable intents"], ["Feedback", "On hits"]]
+
+  - id: cost-07
+    title: One conversation costs $40
+    domain: telco
+    severity: medium
+    tags: [budgets, caps, outliers]
+    scenario: >-
+      A carrier's agent costs about $0.08 per conversation on average. A few
+      conversations with long troubleshooting loops and repeated tool calls cost over $40.
+      With no per-conversation cap, outliers make up 20% of spend.
+    analogy: >-
+      An all-you-can-eat buffet with no time limit.
+    breaks:
+      - No per-conversation budget.
+      - Outliers aren't monitored.
+      - Long sessions grow context cost quadratically.
+    root_cause: >-
+      No cost caps per unit of work.
+    where: Runtime limits.
+    fix:
+      - Set per-conversation and per-task budgets (tokens and dollars), with graceful handoff to a human when exceeded.
+      - Compact context in long sessions.
+      - Alert on cost outliers and review them weekly.
+    detect:
+      - Cost distribution per conversation (p99).
+    tradeoff: >-
+      Some long, legitimate sessions get handed off.
+    variant: >-
+      FinTech: a few research-agent runs on complex companies cost hundreds of dollars each.
+    line: Budget each conversation, not just the month.
+    related: [agf-02, obs-15, mas-09]
+    diagram:
+      bad_label: "Anti-pattern: no per-conversation cost cap"
+      good_label: "Fix: budgets, compaction, outlier alerts"
+      bad: [["Avg $0.08", "Per chat"], ["Outliers", "$40+"], ["20% spend", "From few"], ["Unseen", "No cap"]]
+      good: [["Budget", "Per chat"], ["Handoff", "When exceeded"], ["Compact", "Long sessions"], ["p99 alert", "Weekly review"]]
+
+  - id: cost-08
+    title: Replies three times longer than customers need
+    domain: fintech
+    severity: low
+    tags: [output tokens, verbosity]
+    scenario: >-
+      A bank's assistant averages 450 output tokens per reply, with long introductions and
+      repeated disclaimers. Customers on mobile scroll past most of it. Output tokens cost
+      several times more than input tokens.
+    analogy: >-
+      Answering "what's the time?" with a history of clocks.
+    breaks:
+      - No length guidance or limits.
+      - Disclaimers repeated every turn.
+      - Output cost isn't monitored.
+    root_cause: >-
+      Unmanaged verbosity.
+    where: Prompt and UX.
+    fix:
+      - Set length guidance per intent and channel, and appropriate max output tokens.
+      - Show required disclaimers once in the UI, not in every reply.
+      - Measure output tokens and readability.
+    detect:
+      - Output tokens per intent; scroll and engagement data.
+    tradeoff: >-
+      Too short can drop needed information; evaluate.
+    variant: >-
+      Telco: an SMS channel bot sends multi-part messages that cost per segment.
+    line: Shorter answers are cheaper and usually better.
+    related: [cost-04]
+    diagram:
+      bad_label: "Anti-pattern: no length guidance"
+      good_label: "Fix: length by intent and channel, disclaimers in UI"
+      bad: [["450 tokens", "Avg reply"], ["Intros", "Repeated"], ["Disclaimers", "Every turn"], ["Cost + scroll", "Wasted"]]
+      good: [["Length guide", "Per intent"], ["Max tokens", "Per channel"], ["Disclaimer", "Once in UI"], ["Measure", "Readability"]]
+
+  - id: cost-09
+    title: Nightly ticket summaries run on the real-time API
+    domain: telco
+    severity: medium
+    tags: [batch processing, cost]
+    scenario: >-
+      A carrier summarises 400,000 closed tickets each night for analytics, using the same
+      real-time API as its chatbot, at full price. The job also competes with chatbot
+      traffic for rate limits during early-morning peaks.
+    analogy: >-
+      Sending bulk mail by courier.
+    breaks:
+      - Non-urgent work uses the real-time path.
+      - Batch discounts aren't used.
+      - Shared rate limits create contention.
+    root_cause: >-
+      No distinction between real-time and batch workloads.
+    where: Workload architecture.
+    fix:
+      - Use the provider's batch API for offline jobs (typically discounted, with higher throughput).
+      - Separate quotas or keys for batch and interactive traffic.
+      - Schedule jobs away from interactive peaks.
+    detect:
+      - Share of offline tokens on real-time endpoints.
+    tradeoff: >-
+      Batch results arrive later (hours), which is fine for analytics.
+    variant: >-
+      FinTech: a bank classifies a month of transactions through the interactive API.
+    line: If it can wait, batch it.
+    related: [ops-17]
+    diagram:
+      bad_label: "Anti-pattern: offline jobs on the real-time API"
+      good_label: "Fix: batch API, separate quotas, off-peak scheduling"
+      bad: [["400k tickets", "Nightly"], ["Real-time API", "Full price"], ["Rate limits", "Contention"], ["Chatbot", "Slowed"]]
+      good: [["Batch API", "Discounted"], ["Separate quota", "Batch keys"], ["Off-peak", "Scheduled"], ["Cheaper", "Same output"]]
+
+  - id: cost-10
+    title: Extended reasoning turned on for every request
+    domain: fintech
+    severity: medium
+    tags: [reasoning models, thinking tokens]
+    scenario: >-
+      A bank switches its whole assistant to a reasoning model with a large thinking budget
+      after it performed well on complex mortgage questions. Simple questions ("What's my
+      sort code?") now take 9 seconds and cost 10 times more, with no quality gain.
+    analogy: >-
+      Calling a committee meeting to decide what to have for lunch.
+    breaks:
+      - Reasoning effort applied uniformly.
+      - Thinking tokens are billed and add latency.
+      - Simple tasks gain nothing.
+    root_cause: >-
+      No effort routing.
+    where: Model and parameter selection.
+    fix:
+      - Route by complexity; enable extended reasoning (or a higher effort setting) only for intents that benefit in evals.
+      - Set thinking budgets per intent.
+      - Measure quality, latency and cost per intent.
+    detect:
+      - Thinking tokens per intent.
+    tradeoff: >-
+      Routing errors may under-think hard questions; allow escalation.
+    variant: >-
+      Telco: a care bot uses deep reasoning to answer "what's my balance?"
+    line: Pay for thinking where thinking pays.
+    related: [agf-20, cost-02]
+    diagram:
+      bad_label: "Anti-pattern: maximum reasoning for every request"
+      good_label: "Fix: reasoning budgets by intent, validated by evals"
+      bad: [["Reasoning", "All requests"], ["'Sort code?'", "9 seconds"], ["10x cost", "Thinking"], ["No gain", "Simple asks"]]
+      good: [["Route", "By complexity"], ["Budget", "Per intent"], ["Evals", "Prove gain"], ["Escalate", "If unsure"]]
+
+  - id: cost-11
+    title: Customers stare at a spinner for 8 seconds
+    domain: telco
+    severity: medium
+    tags: [streaming, perceived latency]
+    scenario: >-
+      A carrier's web chat waits for the full reply before showing anything. Complex bill
+      explanations take 8 seconds. Many customers send a second message or leave before the
+      answer appears.
+    analogy: >-
+      A waiter who brings nothing until the whole meal is ready, not even water.
+    breaks:
+      - No streaming.
+      - No progress indicators for tool calls.
+      - Perceived latency equals total latency.
+    root_cause: >-
+      Non-streaming UX.
+    where: Front end and API.
+    fix:
+      - Stream tokens to the UI.
+      - Show step status for tool calls ("Checking your latest bill...").
+      - Run fast output guardrails per chunk or hold back only high-risk segments.
+    detect:
+      - Abandonment and duplicate messages during waits.
+    tradeoff: >-
+      Streaming makes full-response guardrails harder.
+    variant: >-
+      FinTech: a bank's assistant doesn't stream statements summaries, and users refresh the
+      page.
+    line: Show progress. Silence feels slower than it is.
+    related: [tel-08, cost-03]
+    diagram:
+      bad_label: "Anti-pattern: wait for the whole reply"
+      good_label: "Fix: stream tokens and tool progress"
+      bad: [["Full reply", "Then show"], ["8 seconds", "Spinner"], ["Second msg", "Or leave"], ["Abandon", "Rate up"]]
+      good: [["Stream", "Tokens"], ["Tool status", "'Checking bill'"], ["Chunk checks", "Guardrails"], ["Engaged", "Users"]]
+
+  - id: cost-12
+    title: Independent lookups run one after another
+    domain: fintech
+    severity: medium
+    tags: [parallelism, latency]
+    scenario: >-
+      A bank's onboarding agent calls ID verification, sanctions screening, address
+      validation and device-risk scoring one by one, though none depends on the others.
+      Each takes about 1.5 seconds, so the step takes 6 seconds.
+    analogy: >-
+      Cooking four dishes one at a time on a four-burner stove.
+    breaks:
+      - Independent calls are serialised.
+      - The agent loop makes one tool call per turn.
+      - No dependency analysis.
+    root_cause: >-
+      Missed parallelism.
+    where: Orchestration.
+    fix:
+      - Run independent tool calls in parallel (parallel tool calling or workflow fan-out).
+      - Model dependencies explicitly in the workflow.
+      - Set a timeout per call and handle partial results.
+    detect:
+      - Critical-path latency vs sum of tool latencies.
+    tradeoff: >-
+      More concurrent load on downstream systems.
+    variant: >-
+      Telco: an order agent checks credit, serviceability and stock sequentially.
+    line: Parallelise what doesn't depend on each other.
+    related: [rag-18]
+    diagram:
+      bad_label: "Anti-pattern: independent calls in sequence"
+      good_label: "Fix: parallel fan-out with timeouts"
+      bad: [["ID check", "1.5 s"], ["Sanctions", "Then 1.5 s"], ["Address, device", "Then 3 s"], ["6 seconds", "Total"]]
+      good: [["Fan-out", "All 4"], ["Parallel", "1.5 s total"], ["Timeouts", "Per call"], ["Partial", "Handled"]]
+
+  - id: cost-13
+    title: Speculative prefetching that's mostly wasted
+    domain: telco
+    severity: low
+    tags: [prefetch, waste]
+    scenario: >-
+      To cut latency, a carrier's agent prefetches bill, usage, device, roaming and
+      ticket data at the start of every chat, with an LLM summary of each. Most chats need
+      one of them. Prefetching triples BSS load and LLM cost.
+    analogy: >-
+      Cooking every dish on the menu in case someone orders it.
+    breaks:
+      - Prefetch isn't targeted.
+      - LLM summaries of unused data cost money.
+      - Backend load rises.
+    root_cause: >-
+      Untargeted speculation.
+    where: Context assembly strategy.
+    fix:
+      - Prefetch only cheap, high-probability data (account summary), using intent from the first message.
+      - Skip LLM summarisation until data is needed.
+      - Measure prefetch hit rate.
+    detect:
+      - Prefetched data used vs fetched.
+    tradeoff: >-
+      Slightly slower for less common intents.
+    variant: >-
+      FinTech: a bank assistant pulls a year of transactions at login just in case.
+    line: Prefetch what you'll probably use, not everything you might.
+    related: [cost-03]
+    diagram:
+      bad_label: "Anti-pattern: prefetch and summarise everything"
+      good_label: "Fix: targeted prefetch by likely intent"
+      bad: [["Chat starts", "Prefetch all"], ["5 sources", "Summarised"], ["1 used", "Typically"], ["3x load", "And cost"]]
+      good: [["Cheap data", "Account summary"], ["Intent", "First message"], ["Summarise", "Only if used"], ["Hit rate", "Measured"]]
+
+  - id: cost-14
+    title: Large model classifying 100 million transactions a month
+    domain: fintech
+    severity: medium
+    tags: [small models, fine-tuning, classification]
+    scenario: >-
+      A neobank uses a large general model with a long prompt to categorise every card
+      transaction (100 million a month). It works, but costs $180k a month. A small model
+      fine-tuned on two years of labelled categories would match the accuracy at a fraction
+      of the cost.
+    analogy: >-
+      Hiring a senior consultant to sort the post.
+    breaks:
+      - A general model used for a narrow, high-volume task.
+      - Labelled data exists but isn't used.
+      - Cost scales linearly with volume.
+    root_cause: >-
+      No consideration of specialised small models.
+    where: Model strategy.
+    fix:
+      - Fine-tune or distil a small model (or train a classical classifier) for high-volume narrow tasks.
+      - Use the large model for hard or low-confidence cases only.
+      - Evaluate both on the same held-out set.
+    detect:
+      - Cost per thousand items; accuracy by confidence band.
+    tradeoff: >-
+      Fine-tuned models need retraining and MLOps upkeep.
+    variant: >-
+      Telco: a carrier uses a frontier model to classify millions of network alarms.
+    line: High volume and narrow scope means small model.
+    related: [ft-03, agf-20]
+    diagram:
+      bad_label: "Anti-pattern: large model for a narrow, huge task"
+      good_label: "Fix: small fine-tuned model, large model for hard cases"
+      bad: [["100M txns", "Monthly"], ["Large model", "Long prompt"], ["$180k/month", "Cost"], ["Labels unused", "2 years"]]
+      good: [["Fine-tune", "Small model"], ["Confidence", "Low to large"], ["Same evals", "Held-out"], ["Fraction", "Of cost"]]
+
+  - id: cost-15
+    title: Retry storm doubles cost during a provider incident
+    domain: telco
+    severity: medium
+    tags: [retries, backoff, circuit breaker]
+    scenario: >-
+      During a provider slowdown, a carrier's services retry failed calls immediately up to
+      five times, at several layers (SDK, gateway, application). Each customer message
+      generates up to 125 attempts. The provider throttles harder, and successful calls are
+      billed multiple times when timeouts occurred after processing.
+    analogy: >-
+      Everyone in a traffic jam honking harder.
+    breaks:
+      - Retries at multiple layers multiply.
+      - No backoff or jitter.
+      - No circuit breaker.
+    root_cause: >-
+      Uncoordinated retry policy.
+    where: Resilience configuration.
+    fix:
+      - Retry in one layer only (usually the gateway) with exponential backoff and jitter.
+      - Add circuit breakers and fall back to degraded mode.
+      - Set retry budgets (for example at most 10% extra traffic).
+    detect:
+      - Attempts per request; retry ratio during incidents.
+    tradeoff: >-
+      Fewer retries means some failures surface to users; use the degraded mode.
+    variant: >-
+      FinTech: a bank's batch job retries every failed document instantly and exhausts its
+      quota.
+    line: Retry in one place, with backoff and a budget.
+    related: [obs-12, agf-16]
+    diagram:
+      bad_label: "Anti-pattern: immediate retries at every layer"
+      good_label: "Fix: one retry layer, backoff, breaker, budget"
+      bad: [["Provider slow", "Incident"], ["SDK x5", "Gateway x5"], ["App x5", "125 attempts"], ["Throttled", "Billed twice"]]
+      good: [["One layer", "Gateway"], ["Backoff", "+ jitter"], ["Breaker", "Degraded mode"], ["Retry budget", "Max 10%"]]
+
+  - id: cost-16
+    title: Embeddings recomputed for unchanged documents every night
+    domain: fintech
+    severity: low
+    tags: [embeddings, incremental indexing]
+    scenario: >-
+      A bank's nightly job re-embeds all 3 million policy and product chunks, though fewer
+      than 1% change each day. The job takes 5 hours and costs thousands a month.
+    analogy: >-
+      Repainting the whole house because one window frame chipped.
+    breaks:
+      - Full re-embedding regardless of change.
+      - No content hashing.
+      - Waste of time and money.
+    root_cause: >-
+      Non-incremental indexing.
+    where: Ingestion pipeline.
+    fix:
+      - Hash chunk content and only embed new or changed chunks.
+      - Process deletions explicitly.
+      - Do full rebuilds only on embedding-model changes.
+    detect:
+      - Embedding calls per day vs changed chunks.
+    tradeoff: >-
+      Hash and change tracking logic.
+    variant: >-
+      Telco: a carrier re-embeds its entire device-manual library weekly.
+    line: Embed what changed.
+    related: [rag-05, ops-18]
+    diagram:
+      bad_label: "Anti-pattern: re-embed everything nightly"
+      good_label: "Fix: content hashing, embed only changes"
+      bad: [["3M chunks", "Nightly"], ["<1% changed", "Daily"], ["5 hours", "Job"], ["Wasted $", "Monthly"]]
+      good: [["Hash chunks", "Content"], ["Changed only", "Embed"], ["Deletions", "Explicit"], ["Full rebuild", "Model change"]]
+
+  - id: cost-17
+    title: AI costs land in one central budget
+    domain: telco
+    severity: low
+    tags: [chargeback, accountability]
+    scenario: >-
+      A carrier's AI platform team pays for all model usage. Business units launch features
+      without considering cost, because they don't see it. The platform budget is exhausted
+      in Q3.
+    analogy: >-
+      A shared office kitchen where nobody pays for the coffee they drink.
+    breaks:
+      - No cost attribution to the teams that drive it.
+      - No incentives to optimise.
+      - Budget surprises.
+    root_cause: >-
+      No chargeback or showback.
+    where: Financial operations.
+    fix:
+      - Attribute cost per team and feature via gateway keys and tags.
+      - Show back monthly, and charge back once data is trusted.
+      - Require cost estimates in launch reviews.
+    detect:
+      - Share of spend attributed to an owner.
+    tradeoff: >-
+      Chargeback can discourage experimentation; give teams a small sandbox budget.
+    variant: >-
+      FinTech: a bank's central AI budget is consumed by one line of business's
+      experiments.
+    line: Whoever drives the cost should see the cost.
+    related: [tel-04, obs-05]
+    diagram:
+      bad_label: "Anti-pattern: one central budget, no attribution"
+      good_label: "Fix: attribute, show back, charge back"
+      bad: [["Central budget", "Platform"], ["BUs launch", "No cost view"], ["Usage grows", "Unchecked"], ["Q3", "Budget gone"]]
+      good: [["Attribution", "Team keys"], ["Showback", "Monthly"], ["Chargeback", "When trusted"], ["Estimates", "In launch review"]]
+
+  - id: cost-18
+    title: Self-hosted GPUs sit idle 80% of the day
+    domain: fintech
+    severity: medium
+    tags: [gpu utilization, autoscaling]
+    scenario: >-
+      A bank self-hosts a model for internal document review on dedicated GPUs sized for
+      month-end peaks. Average utilisation is 20%, and the cluster costs more than the
+      equivalent hosted API usage would.
+    analogy: >-
+      Buying a bus for the one day a month you carry the whole team.
+    breaks:
+      - Capacity sized for peak, running constantly.
+      - No autoscaling or workload scheduling.
+      - Build-vs-buy cost not revisited.
+    root_cause: >-
+      Static provisioning without utilisation management.
+    where: Infrastructure.
+    fix:
+      - Autoscale on queue depth and use scheduled scaling for known peaks.
+      - Fill idle capacity with batch work, or burst to hosted APIs at peak.
+      - Compare total cost against hosted options regularly.
+    detect:
+      - GPU utilisation and cost per thousand tokens.
+    tradeoff: >-
+      Scaling up takes time (model load); keep a warm minimum.
+    variant: >-
+      Telco: a carrier's on-prem inference cluster for sovereignty runs mostly idle at night.
+    line: Idle GPUs are the most expensive tokens.
+    related: [ops-08]
+    diagram:
+      bad_label: "Anti-pattern: static GPUs sized for peak"
+      good_label: "Fix: autoscale, fill with batch, burst to API"
+      bad: [["Sized", "Month-end peak"], ["20% util", "Average"], ["Always on", "Cluster"], ["Costly", "Vs hosted"]]
+      good: [["Autoscale", "Queue depth"], ["Scheduled", "Known peaks"], ["Batch fill", "Idle time"], ["Compare", "Build vs buy"]]
+
+  - id: cost-19
+    title: Latency SLO with no plan for when it's missed
+    domain: telco
+    severity: medium
+    tags: [degradation, timeouts, fallback]
+    scenario: >-
+      A carrier's agent-assist has a 2-second SLO. When the model is slow, requests just
+      wait and eventually time out at 30 seconds. The agent on the call gets nothing.
+    analogy: >-
+      A train timetable with no plan for delays except waiting.
+    breaks:
+      - SLO defined but not enforced.
+      - No fallback when the budget is exceeded.
+      - Timeout far beyond usefulness.
+    root_cause: >-
+      No degradation strategy tied to the latency budget.
+    where: Serving logic.
+    fix:
+      - Set timeouts at the point where the answer stops being useful.
+      - Fall back to a faster path (smaller model, cached top article, search results) when the budget is exceeded.
+      - Mark degraded responses and measure their rate.
+    detect:
+      - SLO compliance and degraded-response rate.
+    tradeoff: >-
+      Degraded answers are less complete.
+    variant: >-
+      FinTech: a fraud-call assistant waits 20 seconds for a slow model instead of showing
+      the standard script.
+    line: When you miss the budget, degrade. Don't wait.
+    related: [agf-16, obs-14]
+    diagram:
+      bad_label: "Anti-pattern: SLO on paper, requests just wait"
+      good_label: "Fix: useful timeout, fast fallback, degraded flag"
+      bad: [["2 s SLO", "Stated"], ["Slow model", "Waits"], ["30 s timeout", "Useless"], ["Nothing shown", "Agent"]]
+      good: [["Timeout", "When useless"], ["Fallback", "Small model"], ["Cached", "Top article"], ["Degraded", "Flagged"]]
+
+  - id: cost-20
+    title: Prompt compression saves tokens and drops the disclosures
+    domain: fintech
+    severity: high
+    tags: [compression, quality checks]
+    scenario: >-
+      To cut costs, a bank applies aggressive automatic prompt compression to its loan
+      assistant's retrieved documents. Token use drops 45%, but compressed context
+      sometimes removes the required APR range and fee disclosures, and answers omit them.
+    analogy: >-
+      Shrinking a contract to save paper and losing the small print.
+    breaks:
+      - Compression drops low-frequency but critical text.
+      - Optimisation was measured on cost only.
+      - Disclosure completeness wasn't evaluated.
+    root_cause: >-
+      Cost optimisation without quality gates.
+    where: Optimisation process.
+    fix:
+      - Evaluate every cost optimisation on quality, including compliance checks.
+      - Exempt critical sections (disclosures, rates) from compression.
+      - Roll out optimisations behind canaries.
+    detect:
+      - Disclosure-presence checks on answers.
+    tradeoff: >-
+      Smaller savings.
+    variant: >-
+      Telco: compression drops contract cancellation terms from retrieved context.
+    line: A saving that breaks compliance isn't a saving.
+    related: [cicd-19, eval-14]
+    diagram:
+      bad_label: "Anti-pattern: compress context to cut tokens"
+      good_label: "Fix: exempt critical text, quality-gated rollout"
+      bad: [["Compression", "Aggressive"], ["-45% tokens", "Saved"], ["APR dropped", "Disclosures"], ["Non-compliant", "Answers"]]
+      good: [["Exempt", "Disclosures"], ["Evals", "Compliance"], ["Canary", "Rollout"], ["Savings", "Safe ones"]]

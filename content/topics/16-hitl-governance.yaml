@@ -1,0 +1,756 @@
+id: hitl-governance
+order: 16
+prefix: gov
+title: Human-in-the-Loop & Governance
+summary: >-
+  Governance turns "we think it's safe" into evidence: an inventory, risk tiers, model
+  validation, approvals for irreversible actions, audit trails, disclosure, fairness
+  testing and clear incident ownership. Humans in the loop only help when they have time,
+  evidence and authority. In FinTech this maps to model risk management, fair lending and
+  record-keeping rules; in Telco to CPNI, consumer protection and accessibility rules; in
+  the EU, to the AI Act and GDPR.
+scenarios:
+  - id: gov-01
+    title: LLM credit-memo tool deployed outside model risk management
+    domain: fintech
+    severity: high
+    tags: [model risk, sr 11-7, validation]
+    scenario: >-
+      A US bank's commercial-lending team deploys an LLM that drafts credit memos and
+      suggests risk ratings. Because it was bought as a "productivity tool", it never went
+      through model risk management. Examiners find it influences credit decisions and
+      treat it as an unvalidated model.
+    analogy: >-
+      Using a new set of scales in a pharmacy without having them calibrated.
+    breaks:
+      - The tool influences decisions but isn't classified as a model.
+      - No validation, monitoring or documentation.
+      - Ownership is unclear.
+    root_cause: >-
+      AI uses not routed through the model-risk framework.
+    where: Governance process.
+    fix:
+      - Classify AI uses by impact; anything influencing credit, pricing or compliance decisions enters model risk management (inventory, validation, ongoing monitoring).
+      - Document intended use, limitations, evals and controls in a model card.
+      - Define human accountability for decisions the tool informs.
+    detect:
+      - Inventory coverage audits against gateway usage.
+    tradeoff: >-
+      Validation slows deployment; scale effort by risk tier.
+    variant: >-
+      Telco: an AI that sets device-financing credit limits is deployed without review by
+      the credit risk function.
+    line: If it influences a decision, it's a model. Govern it like one.
+    related: [ops-05, ops-15, eval-20]
+    diagram:
+      bad_label: "Anti-pattern: AI tool bypasses model risk"
+      good_label: "Fix: impact-based classification into MRM"
+      bad: [["Productivity", "Tool label"], ["Drafts ratings", "Credit memos"], ["No validation", "No inventory"], ["Exam finding", "Unvalidated"]]
+      good: [["Classify", "By impact"], ["MRM", "Validate, monitor"], ["Model card", "Limits, evals"], ["Accountable", "Human owner"]]
+
+  - id: gov-02
+    title: Disconnect and port-out executed with no human gate
+    domain: telco
+    severity: critical
+    tags: [irreversible actions, approval tiers]
+    scenario: >-
+      A carrier's agent can disconnect lines and approve port-out requests autonomously.
+      A misread request ("cancel my roaming pass") leads to a full line disconnect, and the
+      customer's number is lost to recycling rules before anyone notices.
+    analogy: >-
+      A demolition crew that starts work from a phone message without checking the address.
+    breaks:
+      - Irreversible actions run without confirmation or approval.
+      - No risk tiers for actions.
+      - No cooling-off or undo window.
+    root_cause: >-
+      Human-in-the-loop not designed around reversibility and impact.
+    where: Action policy.
+    fix:
+      - Classify actions by reversibility and impact (read, reversible write, irreversible).
+      - Require explicit customer confirmation for reversible writes and human or out-of-band approval for irreversible ones.
+      - Add soft-delete or cooling-off windows (number quarantine) wherever possible.
+    detect:
+      - Irreversible actions without approval records.
+    tradeoff: >-
+      Slower completion for rare high-impact actions.
+    variant: >-
+      FinTech: an agent closes accounts and sends balances by cheque without approval.
+    line: The less reversible the action, the more human the decision.
+    related: [agf-05, sec-05, tool-05]
+    diagram:
+      bad_label: "Anti-pattern: irreversible actions are autonomous"
+      good_label: "Fix: action tiers by reversibility with approvals"
+      bad: [["'Cancel pass'", "Misread"], ["Disconnect", "Autonomous"], ["Number lost", "Recycled"], ["No undo", "Customer harm"]]
+      good: [["Tier actions", "Reversibility"], ["Confirm", "Reversible"], ["Approve", "Irreversible"], ["Cooling-off", "Quarantine"]]
+
+  - id: gov-03
+    title: Customers aren't told they're talking to an AI
+    domain: fintech
+    severity: medium
+    tags: [transparency, disclosure, eu ai act]
+    scenario: >-
+      A European bank's chat presents its assistant with a human name and photo. Customers
+      believe they're talking to staff and share sensitive information accordingly. A
+      complaint argues the bank misled them, and transparency obligations for AI
+      interacting with people apply.
+    analogy: >-
+      A shop dummy dressed as a sales assistant.
+    breaks:
+      - No disclosure of AI interaction.
+      - Persona design implies a human.
+      - Customer expectations are wrong.
+    root_cause: >-
+      Transparency not designed in.
+    where: Product and compliance.
+    fix:
+      - Disclose clearly that the customer is talking to an AI, at the start and when asked.
+      - Avoid human-like personas that imply a person.
+      - Offer an easy route to a human.
+    detect:
+      - Disclosure presence checks; complaints about deception.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      Telco: a voice agent introduces itself with a human name and never says it's
+      automated.
+    line: Tell people when they're talking to a machine.
+    related: [gov-04]
+    diagram:
+      bad_label: "Anti-pattern: AI presented as a human"
+      good_label: "Fix: clear disclosure and a route to a human"
+      bad: [["Human name", "And photo"], ["Customers", "Think staff"], ["Share more", "Sensitive"], ["Complaint", "Misled"]]
+      good: [["Disclose AI", "At start"], ["No fake human", "Persona"], ["Ask = answer", "Honestly"], ["Human route", "Easy"]]
+
+  - id: gov-04
+    title: Customers trapped in a chatbot doom loop
+    domain: fintech
+    severity: high
+    tags: [escalation, access to humans, consumer protection]
+    scenario: >-
+      A bank's assistant handles disputes but has no clear way to reach a person. Customers
+      with unusual problems loop through the same answers. Regulators have specifically
+      raised concerns about banking chatbots that block access to human help, and complaint
+      volumes rise.
+    analogy: >-
+      A phone menu with no option to speak to anyone.
+    breaks:
+      - No escalation path or triggers.
+      - Bot keeps trying when it's failing.
+      - Containment is the main KPI.
+    root_cause: >-
+      Automation optimised for containment over resolution.
+    where: Product design and KPIs.
+    fix:
+      - Always offer a path to a human, and escalate automatically on triggers (repeated failure, frustration, disputes, vulnerability, legal threats).
+      - Pass full context to the human agent.
+      - Balance containment with resolution and complaint metrics.
+    detect:
+      - Loop detection; requests for a human not honoured.
+    tradeoff: >-
+      More human contacts; fewer complaints and better outcomes.
+    variant: >-
+      Telco: customers can't reach an agent to dispute a bill because the bot keeps
+      re-explaining it.
+    line: Never trap a customer with a bot.
+    related: [obs-13, aev-20]
+    diagram:
+      bad_label: "Anti-pattern: no way out of the bot"
+      good_label: "Fix: escalation triggers and a visible human path"
+      bad: [["Unusual issue", "Dispute"], ["Same answers", "Loop"], ["No human", "Option"], ["Complaints", "Regulator"]]
+      good: [["Human path", "Always"], ["Triggers", "Fail, frustration"], ["Context", "Passed on"], ["KPIs", "Resolution"]]
+
+  - id: gov-05
+    title: LLM-assisted credit decline can't give specific reasons
+    domain: fintech
+    severity: critical
+    tags: [adverse action, ecoa, explainability]
+    scenario: >-
+      A lender lets an LLM review applications and recommend approve or decline, which
+      underwriters mostly follow. When declining, the lender must give applicants the
+      specific principal reasons. The LLM's narrative reasons are vague, inconsistent and
+      can't be tied to the actual factors behind the recommendation.
+    analogy: >-
+      A referee who can't say which rule was broken.
+    breaks:
+      - An opaque model drives credit decisions.
+      - Reasons are generated text, not the factors used.
+      - Legal requirements for specific reasons can't be met.
+    root_cause: >-
+      LLM used as a decision-maker where explainable decisions are required.
+    where: Decision architecture.
+    fix:
+      - Keep credit decisions in validated, explainable models and rules; use the LLM to gather and summarise information, not to decide.
+      - Generate adverse-action reasons from the decision model's factors, with the LLM only drafting the letter from them.
+      - Test reasons for accuracy and consistency.
+    detect:
+      - Mismatch between stated reasons and decision factors.
+    tradeoff: >-
+      Less use of LLM judgement in decisions.
+    variant: >-
+      Telco: a postpaid credit check declines applicants with AI-written reasons that don't
+      match the actual credit policy.
+    line: The LLM can write the letter. It can't be the decision.
+    related: [gov-01, prm-10]
+    diagram:
+      bad_label: "Anti-pattern: LLM recommends credit decisions"
+      good_label: "Fix: explainable decision model, LLM drafts from its factors"
+      bad: [["LLM reviews", "Application"], ["Recommends", "Decline"], ["Vague reasons", "Generated"], ["Can't comply", "Adverse action"]]
+      good: [["Decision model", "Validated"], ["Factors", "Principal reasons"], ["LLM drafts", "From factors"], ["Test", "Consistency"]]
+
+  - id: gov-06
+    title: Retention offers differ by customer name and dialect
+    domain: telco
+    severity: high
+    tags: [fairness, bias testing]
+    scenario: >-
+      A carrier's retention agent uses conversation tone and wording to decide offer
+      generosity. An internal audit finds customers writing in certain dialects or with
+      certain names receive smaller offers on average, even with the same tenure and value.
+    analogy: >-
+      A shop assistant who gives discounts based on accent.
+    breaks:
+      - Model judgement affects outcomes for customers.
+      - Inputs carry proxies for protected characteristics.
+      - No fairness testing.
+    root_cause: >-
+      Unconstrained model discretion over customer outcomes.
+    where: Decision design and testing.
+    fix:
+      - Determine offers from an offer engine using business attributes (tenure, value, churn risk), not conversational style.
+      - Test for disparities with counterfactual evals (same case, different name or dialect).
+      - Monitor outcome distributions across segments.
+    detect:
+      - Counterfactual eval gaps; outcome disparity reports.
+    tradeoff: >-
+      Less personalisation from conversation.
+    variant: >-
+      FinTech: a collections agent offers better repayment plans to customers who write in
+      formal English.
+    line: Same facts, same outcome, whatever the name or accent.
+    related: [sec-03, gov-05]
+    diagram:
+      bad_label: "Anti-pattern: model discretion over offers"
+      good_label: "Fix: offer engine, counterfactual tests, monitoring"
+      bad: [["Tone, wording", "Inputs"], ["Model decides", "Offer size"], ["Dialect, name", "Proxies"], ["Disparity", "Audit"]]
+      good: [["Offer engine", "Business data"], ["Counterfactual", "Name swaps"], ["Monitor", "By segment"], ["Same facts", "Same offer"]]
+
+  - id: gov-07
+    title: Broker's AI client chats aren't archived
+    domain: fintech
+    severity: high
+    tags: [record keeping, finra, communications]
+    scenario: >-
+      A broker-dealer launches an AI assistant that discusses accounts and products with
+      clients. Its conversations are kept in the AI vendor's logs for 30 days. Regulations
+      require business communications with clients to be retained in compliant archives
+      for years. An exam finds the gap.
+    analogy: >-
+      Recording client meetings on a tape that wipes itself every month.
+    breaks:
+      - AI conversations aren't treated as business communications.
+      - Retention depends on vendor defaults.
+      - No supervision or review.
+    root_cause: >-
+      Record-keeping obligations not applied to AI channels.
+    where: Compliance architecture.
+    fix:
+      - Capture AI conversations (and tool actions) into the compliant archive with required retention and immutability.
+      - Include them in supervision and surveillance reviews.
+      - Confirm vendor contracts on data handling.
+    detect:
+      - Archive completeness reconciliation.
+    tradeoff: >-
+      Storage and review costs.
+    variant: >-
+      Telco: AI conversations about contract terms aren't retained, so disputes can't be
+      resolved.
+    line: An AI conversation with a client is a client communication.
+    related: [obs-07, rag-15]
+    diagram:
+      bad_label: "Anti-pattern: vendor logs as the only record"
+      good_label: "Fix: compliant archive, supervision, retention"
+      bad: [["AI client chat", "Accounts"], ["Vendor logs", "30 days"], ["Not archived", "Compliant"], ["Exam gap", "Finding"]]
+      good: [["Archive", "Immutable"], ["Retention", "Years"], ["Supervision", "Reviews"], ["Contracts", "Data terms"]]
+
+  - id: gov-08
+    title: AI incident with no clear owner
+    domain: telco
+    severity: medium
+    tags: [raci, ownership, incident management]
+    scenario: >-
+      A carrier's bot gives wrong porting advice for a week. The AI platform team, the care
+      product owner, the knowledge team and the vendor each think another group owns the
+      fix. Nobody leads the incident, and the issue continues.
+    analogy: >-
+      Four people watching a pot boil over, each assuming someone else will turn off the
+      heat.
+    breaks:
+      - No RACI for AI behaviour and content.
+      - Incident process doesn't name AI owners.
+      - Vendors' responsibilities unclear.
+    root_cause: >-
+      Undefined ownership.
+    where: Operating model.
+    fix:
+      - Define a RACI per AI use case (product owner accountable; platform, content and vendor responsibilities).
+      - Include AI in incident management with named on-call owners.
+      - Review ownership when teams or vendors change.
+    detect:
+      - Time to assign ownership in incidents.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: a bank's AI disclosure error goes unfixed because compliance, product and IT
+      each wait for the others.
+    line: Every AI use case needs one accountable owner.
+    related: [eval-20, obs-08]
+    diagram:
+      bad_label: "Anti-pattern: shared, undefined ownership"
+      good_label: "Fix: RACI per use case and named on-call"
+      bad: [["Wrong advice", "A week"], ["4 teams", "Each waits"], ["No lead", "Incident"], ["Continues", "Harm"]]
+      good: [["RACI", "Per use case"], ["Accountable", "Product owner"], ["On-call", "Named"], ["Vendor", "Defined role"]]
+
+  - id: gov-09
+    title: Call records used to fine-tune a model without a legal basis
+    domain: telco
+    severity: high
+    tags: [training data, consent, cpni]
+    scenario: >-
+      A carrier's data-science team fine-tunes a model on two years of care transcripts and
+      call-detail data to improve churn conversations. No one checked whether customer
+      consent and CPNI rules allow this use. The privacy team halts the project and the
+      model must be deleted.
+    analogy: >-
+      Using customers' letters to train new staff without asking whether that's allowed.
+    breaks:
+      - Data reused for a new purpose without assessment.
+      - No consent or legal-basis check.
+      - No data lineage for training sets.
+    root_cause: >-
+      Training-data governance missing.
+    where: Data governance.
+    fix:
+      - Require a privacy and legal review (purpose, legal basis, consent, CPNI) before using customer data for training.
+      - Minimise and de-identify training data.
+      - Record lineage so models can be traced and retrained if data must be removed.
+    detect:
+      - Training datasets without approval records.
+    tradeoff: >-
+      Slower experimentation.
+    variant: >-
+      FinTech: a bank trains on customer emails without checking GLBA and privacy notices.
+    line: Training is a new purpose. Check you're allowed.
+    related: [data-07, ops-04]
+    diagram:
+      bad_label: "Anti-pattern: training on customer data unreviewed"
+      good_label: "Fix: legal basis review, minimisation, lineage"
+      bad: [["2 years", "Transcripts + CDRs"], ["Fine-tune", "Churn model"], ["No review", "Consent? CPNI?"], ["Halted", "Model deleted"]]
+      good: [["Privacy review", "Before use"], ["Legal basis", "Checked"], ["De-identify", "Minimise"], ["Lineage", "Traceable"]]
+
+  - id: gov-10
+    title: Real-time emotion detection on call-centre agents
+    domain: telco
+    severity: critical
+    tags: [eu ai act, prohibited practices, workplace]
+    scenario: >-
+      A European carrier adds an AI feature that infers its care agents' emotions from
+      their voice during calls and feeds it into performance dashboards. The EU AI Act
+      prohibits emotion-recognition systems in the workplace (with narrow exceptions), and
+      the works council challenges it.
+    analogy: >-
+      Fitting a lie detector to every employee's chair.
+    breaks:
+      - The use case wasn't classified against AI Act risk categories.
+      - Vendor features enabled by default.
+      - No legal or employee-representative review.
+    root_cause: >-
+      No AI risk classification before deployment.
+    where: Governance.
+    fix:
+      - Classify every AI use case against the AI Act categories (prohibited, high-risk, limited, minimal) before deployment.
+      - Disable prohibited features in vendor products.
+      - Involve legal, privacy and employee representatives for workplace AI.
+    detect:
+      - Inventory entries without risk classification.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: a bank uses AI to infer customers' emotions to adjust collections strategies
+      without assessing legal risk.
+    line: Classify before you deploy. Some uses aren't allowed at all.
+    related: [ops-15, gov-01]
+    diagram:
+      bad_label: "Anti-pattern: deploy vendor AI features unclassified"
+      good_label: "Fix: AI Act classification and stakeholder review"
+      bad: [["Emotion AI", "On agents"], ["Dashboards", "Performance"], ["Prohibited", "Workplace"], ["Challenged", "Works council"]]
+      good: [["Classify", "AI Act tiers"], ["Disable", "Prohibited"], ["Review", "Legal, staff"], ["Inventory", "Risk class"]]
+
+  - id: gov-11
+    title: AI vendor dependency never assessed as third-party risk
+    domain: fintech
+    severity: high
+    tags: [third party risk, dora, vendors]
+    scenario: >-
+      An EU bank's customer-service assistant relies on a single external model provider.
+      Under operational-resilience rules for financial entities, critical ICT third-party
+      dependencies need risk assessment, contractual terms and exit plans. None exist, and a
+      supervisor flags it.
+    analogy: >-
+      Running the bank's phones through one supplier with no contract terms or backup.
+    breaks:
+      - AI providers bypass vendor-risk processes.
+      - No exit strategy or substitutability assessment.
+      - Contracts lack audit and incident clauses.
+    root_cause: >-
+      AI vendors not treated as critical third parties.
+    where: Vendor risk management.
+    fix:
+      - Run AI providers through third-party risk management (criticality, concentration, contracts, audit rights, incident reporting).
+      - Document exit and substitution plans with a tested alternative model.
+      - Monitor vendor performance and incidents.
+    detect:
+      - AI vendors in use without risk assessments.
+    tradeoff: >-
+      Procurement takes longer.
+    variant: >-
+      Telco: a carrier's AI care platform vendor has no exit plan, and switching would take
+      a year.
+    line: Your model provider is a critical supplier. Manage it like one.
+    related: [ops-16, agf-16]
+    diagram:
+      bad_label: "Anti-pattern: AI provider outside vendor risk"
+      good_label: "Fix: third-party risk, contracts, exit plan"
+      bad: [["One provider", "Critical"], ["No assessment", "Vendor risk"], ["No exit plan", "Contracts weak"], ["Flagged", "Supervisor"]]
+      good: [["TPRM", "Assess"], ["Contract", "Audit, incidents"], ["Exit plan", "Tested backup"], ["Monitor", "Vendor"]]
+
+  - id: gov-12
+    title: AI policy document says one thing, the system does another
+    domain: telco
+    severity: medium
+    tags: [policy as code, controls]
+    scenario: >-
+      A carrier's AI policy says "AI must not make account changes without customer
+      confirmation." An audit finds three agents that change plans without confirmation,
+      because the policy lives in a PDF and isn't enforced in any system.
+    analogy: >-
+      A speed limit sign on a road with no speed cameras and no police.
+    breaks:
+      - Policies aren't mapped to technical controls.
+      - No automated checks.
+      - Compliance is assumed.
+    root_cause: >-
+      Governance as documents, not controls.
+    where: Governance implementation.
+    fix:
+      - Map each policy statement to a technical control (tool preconditions, pipeline checks, monitoring).
+      - Encode rules as policy-as-code where possible (for example in the gateway or tool layer).
+      - Test controls continuously and report coverage.
+    detect:
+      - Policy statements without mapped controls.
+    tradeoff: >-
+      Engineering effort to implement controls.
+    variant: >-
+      FinTech: a bank's AI policy forbids customer PII in prompts to external models, but
+      nothing enforces it.
+    line: A policy without a control is a wish.
+    related: [gov-20, sec-06]
+    diagram:
+      bad_label: "Anti-pattern: policy only in a PDF"
+      good_label: "Fix: map policies to enforced, tested controls"
+      bad: [["Policy PDF", "Confirm changes"], ["Agents", "Don't confirm"], ["No control", "Enforced"], ["Audit", "Violation"]]
+      good: [["Map", "Policy to control"], ["Policy-as-code", "Gateway, tools"], ["Test", "Continuously"], ["Coverage", "Reported"]]
+
+  - id: gov-13
+    title: Human overrides are never fed back
+    domain: fintech
+    severity: medium
+    tags: [feedback, overrides, learning]
+    scenario: >-
+      A bank's fraud analysts override the AI triage recommendation in 18% of cases. The
+      overrides are recorded as case outcomes but never analysed. The same misjudgements
+      repeat for months.
+    analogy: >-
+      A sat-nav that never learns from the drivers who keep ignoring its route.
+    breaks:
+      - Overrides aren't captured as structured signals.
+      - No analysis of override patterns.
+      - The model and prompts don't improve.
+    root_cause: >-
+      Human-in-the-loop used for control only, not learning.
+    where: Feedback loop.
+    fix:
+      - Capture overrides with reason codes.
+      - Analyse override patterns monthly and turn them into eval cases and fixes.
+      - Track override rate by category as a quality metric.
+    detect:
+      - Override rate trend by category.
+    tradeoff: >-
+      Analysts need a quick way to give reasons.
+    variant: >-
+      Telco: NOC engineers override AI root-cause suggestions without any feedback loop.
+    line: Every override is a free label.
+    related: [ops-12, eval-05]
+    diagram:
+      bad_label: "Anti-pattern: overrides recorded but ignored"
+      good_label: "Fix: reason codes, monthly analysis, eval cases"
+      bad: [["AI triage", "Recommends"], ["18% override", "Analysts"], ["Not analysed", "Outcomes only"], ["Repeats", "Months"]]
+      good: [["Reason codes", "On override"], ["Monthly", "Pattern review"], ["Eval cases", "From overrides"], ["Track rate", "By category"]]
+
+  - id: gov-14
+    title: Automated postpaid decline with no human review option
+    domain: telco
+    severity: high
+    tags: [automated decisions, gdpr article 22, contestability]
+    scenario: >-
+      An EU carrier's online sales agent automatically declines postpaid applications based
+      on an AI credit-risk score, with no human involvement. Applicants have no way to ask
+      for review or explanation. A data protection authority complaint follows.
+    analogy: >-
+      A machine at the door that refuses entry and can't be appealed.
+    breaks:
+      - Solely automated decisions with significant effects.
+      - No explanation or contest mechanism.
+      - Legal requirements for safeguards not met.
+    root_cause: >-
+      Automated decision-making without required safeguards.
+    where: Decision process.
+    fix:
+      - Provide meaningful information about the logic, the right to human review and a way to contest.
+      - Route declines or borderline cases to human review where required.
+      - Document the decision process and lawful basis.
+    detect:
+      - Declines without review option; review request outcomes.
+    tradeoff: >-
+      Human review costs.
+    variant: >-
+      FinTech: a bank's instant overdraft decision has no route to human review.
+    line: Automated decisions with real effects need a human route.
+    related: [gov-05]
+    diagram:
+      bad_label: "Anti-pattern: solely automated decline, no recourse"
+      good_label: "Fix: explanation, human review, contest route"
+      bad: [["AI score", "Credit risk"], ["Auto decline", "No human"], ["No recourse", "Applicant"], ["DPA complaint", "Filed"]]
+      good: [["Explain logic", "Meaningful"], ["Human review", "On request"], ["Contest", "Route"], ["Document", "Lawful basis"]]
+
+  - id: gov-15
+    title: Human review queue with no SLA or capacity plan
+    domain: fintech
+    severity: high
+    tags: [human in the loop, capacity, sla]
+    scenario: >-
+      A bank routes high-risk AI fraud decisions to human analysts. Volume grows faster than
+      the team, and the queue reaches 4 days. Legitimate customers' cards stay blocked, and
+      complaints surge.
+    analogy: >-
+      A checkpoint with one guard and a growing queue of cars.
+    breaks:
+      - Review step without capacity planning.
+      - No SLA or prioritisation.
+      - Automation volume changes without staffing changes.
+    root_cause: >-
+      Human-in-the-loop designed as a step, not as a service.
+    where: Operations design.
+    fix:
+      - Set SLAs for review queues and plan capacity from forecast volumes.
+      - Prioritise by risk and customer impact; auto-resolve low-risk cases with safeguards.
+      - Monitor queue age and alert before SLA breaches.
+    detect:
+      - Queue age, throughput and SLA compliance.
+    tradeoff: >-
+      Staffing costs, or accepting more automation risk at the margin.
+    variant: >-
+      Telco: port-out fraud reviews queue for days, blocking legitimate customers from
+      switching carriers within regulated timeframes.
+    line: A human in the loop is a service with a capacity.
+    related: [sec-19]
+    diagram:
+      bad_label: "Anti-pattern: review step without capacity planning"
+      good_label: "Fix: SLAs, risk prioritisation, queue monitoring"
+      bad: [["AI flags", "High risk"], ["Volume grows", "Team doesn't"], ["4-day queue", "Cards blocked"], ["Complaints", "Surge"]]
+      good: [["SLA", "Per queue"], ["Capacity", "Forecast"], ["Prioritise", "Risk, impact"], ["Age alerts", "Before breach"]]
+
+  - id: gov-16
+    title: Staff paste customer data into public chatbots
+    domain: telco
+    severity: high
+    tags: [shadow ai, data leakage, policy]
+    scenario: >-
+      Care agents at a carrier use free public AI chatbots to draft replies, pasting
+      customer names, addresses and account details. The company has no approved
+      alternative. A security review finds thousands of such pastes.
+    analogy: >-
+      Staff photocopying customer files at a public library because the office copier is
+      broken.
+    breaks:
+      - No approved, safe internal tool.
+      - No policy awareness or technical controls.
+      - Data leaves the company's control.
+    root_cause: >-
+      Shadow AI driven by unmet needs.
+    where: Governance and IT provision.
+    fix:
+      - Provide an approved internal assistant with enterprise data protections.
+      - Publish clear guidance, and train staff.
+      - Use data-loss-prevention controls for known public AI sites.
+    detect:
+      - DLP events to AI domains.
+    tradeoff: >-
+      Cost of an enterprise tool; much cheaper than a breach.
+    variant: >-
+      FinTech: relationship managers paste client portfolios into consumer chatbots to
+      write summaries.
+    line: Give people a safe tool, or they'll use an unsafe one.
+    related: [sec-06]
+    diagram:
+      bad_label: "Anti-pattern: no approved tool, so staff use public AI"
+      good_label: "Fix: approved assistant, guidance, DLP"
+      bad: [["Care agents", "Need help"], ["Public chatbot", "Free"], ["Customer data", "Pasted"], ["Thousands", "Of pastes"]]
+      good: [["Approved tool", "Enterprise"], ["Guidance", "Training"], ["DLP", "AI domains"], ["Monitor", "Events"]]
+
+  - id: gov-17
+    title: Pilot runs for two years with no success criteria
+    domain: fintech
+    severity: medium
+    tags: [pilots, kill criteria, value]
+    scenario: >-
+      A bank's AI pilot for mortgage document review starts with "let's see how it goes".
+      Two years later, it still runs in pilot mode, costs money, and nobody can say whether
+      it should be scaled or stopped.
+    analogy: >-
+      A trial gym membership that never converts or cancels.
+    breaks:
+      - No success or kill criteria defined upfront.
+      - No baseline measurement.
+      - No decision date.
+    root_cause: >-
+      Pilots without governance.
+    where: Portfolio management.
+    fix:
+      - Define success metrics, baseline, kill criteria and a decision date before starting.
+      - Review pilots at fixed checkpoints and decide (scale, change, stop).
+      - Count pilot costs in the portfolio.
+    detect:
+      - Pilots past their decision dates.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      Telco: a network-AI pilot runs for 18 months without a go or no-go decision.
+    line: Every pilot needs a finish line.
+    related: [ops-20]
+    diagram:
+      bad_label: "Anti-pattern: open-ended pilot"
+      good_label: "Fix: success and kill criteria with a decision date"
+      bad: [["'Let's see'", "Pilot start"], ["No baseline", "No metrics"], ["2 years", "Still pilot"], ["No decision", "Cost runs"]]
+      good: [["Success metric", "Defined"], ["Baseline", "Measured"], ["Kill criteria", "Upfront"], ["Decision date", "Fixed"]]
+
+  - id: gov-18
+    title: Voice bot unusable for customers with speech impairments
+    domain: telco
+    severity: medium
+    tags: [accessibility, inclusion]
+    scenario: >-
+      A carrier replaces its phone menu with an AI voice agent. Customers with speech
+      impairments or strong accents are often misunderstood, and the agent has no option to
+      switch to keypad input or reach a human. Accessibility complaints follow.
+    analogy: >-
+      A building with only stairs at the entrance.
+    breaks:
+      - Accessibility not tested.
+      - No alternative input or escalation.
+      - ASR performance varies across speakers.
+    root_cause: >-
+      Inclusive design not part of requirements.
+    where: Product requirements and testing.
+    fix:
+      - Offer alternatives (keypad, text channel, quick human transfer) when recognition fails repeatedly.
+      - Test with diverse speakers, including speech impairments and accents.
+      - Measure recognition failure rates by group where possible.
+    detect:
+      - Repeated "didn't understand" events per call.
+    tradeoff: >-
+      More human transfers for some groups; that's the requirement.
+    variant: >-
+      FinTech: a bank's voice-only authentication excludes customers who can't use it
+      reliably.
+    line: Design for every customer, not the average one.
+    related: [gov-04]
+    diagram:
+      bad_label: "Anti-pattern: voice-only with no alternatives"
+      good_label: "Fix: alternative inputs, diverse testing, fast transfer"
+      bad: [["Voice only", "Agent"], ["Speech issues", "Misheard"], ["No keypad", "No human"], ["Complaints", "Accessibility"]]
+      good: [["Alternatives", "Keypad, text"], ["Fast transfer", "On failure"], ["Diverse tests", "Speakers"], ["Measure", "By group"]]
+
+  - id: gov-19
+    title: Nobody knows the regulator notification deadline for an AI incident
+    domain: fintech
+    severity: high
+    tags: [incident reporting, dora, regulation]
+    scenario: >-
+      An EU bank's AI assistant exposes customer data for six hours due to a caching bug.
+      The incident team handles the technical fix but doesn't know whether it qualifies as
+      a major ICT-related incident or a personal-data breach, or the reporting deadlines
+      for each.
+    analogy: >-
+      Knowing how to put out a fire but not that you must call the fire brigade.
+    breaks:
+      - AI incidents aren't mapped to reporting obligations.
+      - Classification criteria are unknown to responders.
+      - Deadlines are missed.
+    root_cause: >-
+      Regulatory reporting not integrated into AI incident response.
+    where: Incident management.
+    fix:
+      - Map AI incident types to reporting regimes (data protection breach notification, operational-resilience incident reporting) with criteria and deadlines.
+      - Include compliance in AI incident playbooks from the first hour.
+      - Practise with tabletop exercises.
+    detect:
+      - Time from detection to classification decision.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      Telco: a carrier doesn't know whether an AI-driven CPNI exposure must be reported to
+      the regulator and law enforcement, and within what timeframe.
+    line: Know your reporting clock before the incident starts it.
+    related: [sec-20, obs-19]
+    diagram:
+      bad_label: "Anti-pattern: technical response only"
+      good_label: "Fix: incident types mapped to reporting rules and clocks"
+      bad: [["Data exposed", "6 hours"], ["Tech fix", "Done"], ["Report?", "Unknown"], ["Deadline", "Missed"]]
+      good: [["Map types", "To regimes"], ["Criteria", "Deadlines"], ["Compliance", "Hour one"], ["Tabletop", "Practised"]]
+
+  - id: gov-20
+    title: Governance checklist signed but never checked
+    domain: telco
+    severity: medium
+    tags: [governance, evidence, automation]
+    scenario: >-
+      A carrier's AI governance board approves launches based on a self-assessed checklist
+      ("evals done: yes", "PII handled: yes"). Post-launch reviews show half of the "yes"
+      answers had no evidence.
+    analogy: >-
+      A pilot ticking a pre-flight checklist from memory without looking at the plane.
+    breaks:
+      - Self-attested answers.
+      - No linked evidence.
+      - No automated verification.
+    root_cause: >-
+      Governance relies on attestation instead of evidence.
+    where: Governance process.
+    fix:
+      - Require evidence links for each checklist item (eval report, DPIA, red-team results, model card).
+      - Generate as much evidence automatically from the pipeline as possible.
+      - Spot-check approvals.
+    detect:
+      - Checklist items without evidence.
+    tradeoff: >-
+      More effort per launch, mostly automated.
+    variant: >-
+      FinTech: a bank's AI approvals cite "validated" models that have no validation report.
+    line: Governance runs on evidence, not ticks.
+    related: [gov-12, cicd-15]
+    diagram:
+      bad_label: "Anti-pattern: self-attested checklist"
+      good_label: "Fix: evidence links generated by the pipeline"
+      bad: [["Checklist", "Self-assessed"], ["'Evals: yes'", "No proof"], ["Approved", "Launch"], ["Half missing", "Evidence"]]
+      good: [["Evidence links", "Per item"], ["Pipeline", "Generates"], ["Spot checks", "Approvals"], ["Report", "Gaps"]]

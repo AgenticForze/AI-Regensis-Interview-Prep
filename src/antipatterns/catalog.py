@@ -28,7 +28,10 @@ def content_dir() -> Path:
 def load_topics() -> list[dict]:
     topics = []
     for p in sorted((content_dir() / "topics").glob("*.yaml")):
-        t = yaml.safe_load(p.read_text())
+        try:
+            t = yaml.safe_load(p.read_text())
+        except yaml.YAMLError as e:
+            raise ValueError(f"{p.name}: invalid YAML: {e}") from None
         t["_file"] = p.name
         for s in t["scenarios"]:
             s["topic"] = t["id"]
