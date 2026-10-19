@@ -162,27 +162,40 @@
         <div class="refs">${groups}</div>
         <div style="display:grid;gap:10px;min-width:0;align-content:start">
           <label for="spec" class="mono muted" style="font-size:.78rem">Architecture spec (YAML or JSON). <a href="https://github.com/AgenticForze/AI-Regensis-Interview-Prep/blob/main/docs/architecture-spec.md">Spec format</a></label>
-          <textarea id="spec" spellcheck="false">${esc(arch.yaml)}</textarea>
-          <div class="copyrow"><button class="btn" id="run">Run review</button><button class="btn ghost" id="copy-prompt" type="button">Copy a prompt to turn your own scenario into a spec</button><span id="copy-note" class="muted" style="font-size:.82rem"></span></div>
+          <textarea id="spec" spellcheck="false">${esc(specText(arch))}</textarea>
+          <div class="copyrow"><button class="btn" id="run" type="button">Run review</button><span id="run-status" class="run-status" role="status" aria-live="polite"></span></div>
+          <div class="copyrow"><button class="btn ghost" id="copy-prompt" type="button">Copy a prompt to turn your own scenario into a spec</button><span id="copy-note" class="muted" style="font-size:.82rem"></span></div>
           <div id="spec-err" hidden></div>
         </div>
       </div>
       <div id="result"></div>`;
-    main.querySelectorAll("[data-arch]").forEach((b) => b.addEventListener("click", () => { location.hash = "review-" + b.dataset.arch; }));
-    $("#run").addEventListener("click", runReview);
+    main.querySelectorAll("[data-arch]").forEach((b) => b.addEventListener("click", () => {
+      const h = "review-" + b.dataset.arch;
+      if (location.hash === "#" + h) reviewView(b.dataset.arch); else location.hash = h;
+    }));
+    $("#run").addEventListener("click", () => runReview(true));
     $("#copy-prompt").addEventListener("click", copyPrompt);
-    runReview();
+    runReview(false);
+  }
+
+  // Without the YAML library (blocked CDN), the editor shows and accepts JSON instead.
+  function specText(arch) {
+    return window.jsyaml ? arch.yaml : JSON.stringify(arch.spec, null, 2);
   }
 
   function parseSpec(text) {
     const t = text.trim();
-    if (t.startsWith("{")) return JSON.parse(t);
-    if (!window.jsyaml) throw new Error("The YAML parser didn't load. Paste the spec as JSON instead.");
-    return window.jsyaml.load(t);
+    if (currentArch && t === specText(currentArch).trim()) return JSON.parse(JSON.stringify(currentArch.spec));
+    if (t.startsWith("{")) {
+      try { return JSON.parse(t); } catch (e) { throw new Error("The JSON isn't valid: " + e.message); }
+    }
+    if (!window.jsyaml) throw new Error("The YAML reader couldn't load on this network, so the editor accepts JSON only. Pick a reference design to get a JSON starting point.");
+    try { return window.jsyaml.load(t); } catch (e) { throw new Error("The YAML isn't valid: " + e.message); }
   }
 
-  function runReview() {
+  function runReview(fromButton) {
     const err = $("#spec-err");
+    const status = $("#run-status");
     err.hidden = true;
     let res;
     try {
@@ -191,7 +204,10 @@
       err.className = "err";
       err.textContent = "Couldn't review this spec. " + e.message;
       err.hidden = false;
+      status.textContent = "Review failed: see the message below the editor.";
+      status.dataset.state = "error";
       $("#result").innerHTML = "";
+      if (fromButton) err.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
     const comp = res.findings.filter((f) => f.scope === "component");
@@ -209,6 +225,11 @@
       <section><h2>3. Fixed architecture</h2><div class="dg">${svg(res.after_svg)}</div></section>
       <section><h2>4. Summary</h2><div class="tbl-wrap"><table><thead><tr><th>#</th><th>Failure point</th><th>Severity</th><th>Fix</th><th>Owner</th></tr></thead><tbody>
         ${res.findings.map((f) => `<tr><td class="mono">${f.label}</td><td>${esc(f.title)}</td><td>${sev(f.severity)}</td><td>${esc(f.fix[0])}</td><td>${esc(f.owner)}</td></tr>`).join("")}</tbody></table></div></section>`;
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    status.innerHTML = `Reviewed at ${time}: <b>${comp.length}</b> failure point${comp.length === 1 ? "" : "s"}, <b>${plat.length}</b> platform gap${plat.length === 1 ? "" : "s"}. <a href="#" id="jump">Jump to results</a>`;
+    status.dataset.state = "ok";
+    $("#jump").addEventListener("click", (e) => { e.preventDefault(); $("#result").scrollIntoView({ behavior: "smooth", block: "start" }); });
+    if (fromButton) $("#result").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function copyPrompt() {

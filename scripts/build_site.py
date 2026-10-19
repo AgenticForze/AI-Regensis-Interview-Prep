@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+import yaml
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +30,7 @@ def data() -> dict:
     archs = []
     for a in list_architectures():
         text = (ROOT / "content" / "architectures" / f"{a['id']}.yaml").read_text()
-        archs.append({**a, "yaml": text})
+        archs.append({**a, "yaml": text, "spec": yaml.safe_load(text)})
     return {"topics": topics, "rules": load_rules(), "architectures": archs}
 
 
