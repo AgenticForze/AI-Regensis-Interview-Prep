@@ -15,7 +15,7 @@ CONTENT = ROOT / "content"
 REQUIRED = ["id", "title", "domain", "severity", "scenario", "analogy", "breaks", "root_cause",
             "where", "fix", "detect", "tradeoff", "variant", "line", "diagram"]
 DOMAINS = {"telco", "fintech"}
-SEVERITIES = {"critical", "high", "medium"}
+SEVERITIES = {"critical", "high", "medium", "low"}
 
 
 def content_dir() -> Path:

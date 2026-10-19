@@ -1,0 +1,772 @@
+id: agent-evals
+order: 4
+prefix: aev
+title: Agent Evals
+summary: >-
+  Agents are judged on outcomes, trajectories and side effects, not on a single reply.
+  Check the final state of the BSS or core-banking system, the path the agent took to
+  get there, what it cost, and whether it would do the same thing ten times out of ten.
+scenarios:
+  - id: aev-01
+    title: eSIM agent says activated, but no profile was installed
+    domain: telco
+    severity: high
+    tags: [outcome evals, state checks, esim]
+    scenario: >-
+      A carrier evaluates its eSIM-transfer agent with an LLM judge that reads the final
+      message. The suite passes at 96%. In production, 11% of customers who were told
+      "Your eSIM is active" have no service: the agent created the order, but the SM-DP+
+      profile download never completed, and the agent never checked.
+    analogy: >-
+      Grading a plumber by asking them whether the leak is fixed, instead of turning the
+      tap on.
+    breaks:
+      - The eval graded the agent's claim, not the system state.
+      - The agent's success message came before the asynchronous provisioning step finished.
+      - Nothing compared the order state and SIM profile state after the run.
+    root_cause: >-
+      Response-based grading for a task whose success is a change in external systems.
+    where: Eval harness design.
+    fix:
+      - Grade outcomes by querying system state after the run (order completed in TMF622, profile status INSTALLED on the SM-DP+, line active in inventory).
+      - Make the agent wait on, or poll, provisioning status before confirming, with a "pending" message if not done.
+      - Keep the judge only for tone and clarity, as a secondary score.
+    detect:
+      - Post-run state assertions in the eval harness; in production, a reconciliation of "confirmed" sessions against activation records.
+    tradeoff: >-
+      State checks need a sandbox BSS with realistic async behaviour, which takes effort to
+      build.
+    variant: >-
+      FinTech: a card-replacement agent says "new card on its way" while the card-issuing
+      request failed validation.
+    line: Check the world, not the agent's claim about the world.
+    related: [aev-12, aev-04]
+    diagram:
+      bad_label: "Anti-pattern: judge reads the final message"
+      good_label: "Fix: assert system state after the run"
+      bad: [["eSIM transfer", "Agent run"], ["'Active!'", "Final message"], ["Judge: pass", "96%"], ["11% no service", "Profile failed"]]
+      good: [["Agent run", "In sandbox"], ["Order state", "TMF622 done"], ["Profile state", "INSTALLED"], ["Then confirm", "Or 'pending'"]]
+
+  - id: aev-02
+    title: Dispute agent grants provisional credit before verifying identity
+    domain: fintech
+    severity: high
+    tags: [trajectory evals, required steps, reg e]
+    scenario: >-
+      A bank's card-dispute agent is evaluated on whether the dispute ends with the right
+      status and provisional credit. It scores 93%. A review of traces shows that in 8%
+      of runs it issued provisional credit before completing identity verification,
+      which policy forbids. Fraudsters learned to exploit the gap.
+    analogy: >-
+      Checking that a bank teller ended the day with the right cash total, without checking
+      whether they asked for ID before paying out.
+    breaks:
+      - Outcome-only grading passes runs with forbidden steps.
+      - Order of operations matters for policy, not only for the result.
+      - The trajectory was never inspected.
+    root_cause: >-
+      No trajectory evaluation of required and forbidden steps.
+    where: Eval suite and tool preconditions.
+    fix:
+      - Add trajectory checks (verify_identity must precede issue_credit, and no credit tool call in unverified sessions).
+      - Enforce the precondition in the credit tool as well, using session verification status.
+      - Track step count and redundant calls as efficiency metrics.
+    detect:
+      - Automated trajectory assertions on every eval run; production trace audits for ordering violations.
+    tradeoff: >-
+      Trajectory checks need maintained policy definitions; keep them few and important.
+    variant: >-
+      Telco: a SIM-swap agent completes the swap correctly but called the swap tool before
+      the fraud score came back.
+    line: How the agent got there matters as much as where it landed.
+    related: [aev-03, aev-09, agf-13]
+    diagram:
+      bad_label: "Anti-pattern: grade only the final outcome"
+      good_label: "Fix: trajectory rules plus tool preconditions"
+      bad: [["Dispute agent", "Eval run"], ["Right status", "Credit issued"], ["Credit first", "ID check later"], ["Exploited", "By fraudsters"]]
+      good: [["Required order", "Verify, credit"], ["Forbidden", "Unverified credit"], ["Precondition", "In credit tool"], ["Trace audit", "In production"]]
+
+  - id: aev-03
+    title: Plan-change evals demand one exact tool sequence
+    domain: telco
+    severity: medium
+    tags: [trajectory matching, invariants, brittleness]
+    scenario: >-
+      A carrier's plan-change agent is evaluated by exact match against a golden tool-call
+      sequence: get_account, get_plans, check_eligibility, change_plan. A new version calls
+      check_eligibility before get_plans, which is equally valid, and fails 40% of evals.
+      The team reverts an improvement because the eval said it was worse.
+    analogy: >-
+      Marking a maths answer wrong because the student did the steps in a different but
+      correct order.
+    breaks:
+      - Many trajectories are equally correct.
+      - Exact matching punishes valid variation.
+      - It also rewards overfitting to one script.
+    root_cause: >-
+      The eval encodes one path instead of the constraints that matter.
+    where: Trajectory scoring.
+    fix:
+      - Check invariants (must include eligibility check before change_plan, must not call cancel tools) instead of the full sequence.
+      - Apply order constraints only where the business requires them.
+      - Combine invariants with final-state checks.
+    detect:
+      - Review eval failures for valid alternative paths.
+    tradeoff: >-
+      Invariants can miss subtle inefficiencies; track step counts separately.
+    variant: >-
+      FinTech: an address-change agent fails evals for looking up the customer by phone
+      instead of by account number.
+    line: Grade constraints, not a script.
+    related: [aev-02]
+    diagram:
+      bad_label: "Anti-pattern: exact match on one golden sequence"
+      good_label: "Fix: invariants, order rules only where needed"
+      bad: [["Golden path", "4 calls fixed"], ["Valid reorder", "New version"], ["40% fail", "Exact match"], ["Revert", "Good change lost"]]
+      good: [["Must include", "Eligibility"], ["Must not", "Cancel tools"], ["Order rule", "Check first"], ["Final state", "Plan changed"]]
+
+  - id: aev-04
+    title: Collections agent eval sends real emails to customers
+    domain: fintech
+    severity: critical
+    tags: [sandbox, side effects, collections]
+    scenario: >-
+      A lender runs a new evaluation of its collections agent against a staging
+      environment that, unknown to the team, is connected to the production email
+      service. 400 real customers receive payment reminder emails, some outside allowed
+      contact hours, creating FDCPA and complaint exposure.
+    analogy: >-
+      Testing a fire alarm by setting fire to the building.
+    breaks:
+      - Agent evals execute real actions.
+      - Staging shared credentials or connectors with production.
+      - No guard prevented outbound messages from test runs.
+    root_cause: >-
+      No isolated simulation environment for agent evaluation.
+    where: Eval infrastructure.
+    fix:
+      - Run agent evals in a sandbox with mocked or recorded tools and seeded fake customers.
+      - Use test tenants and allow-listed test recipients only; block outbound channels at the network level.
+      - Reset environment state for every run.
+    detect:
+      - Alerts on any outbound message from eval or staging identities.
+    tradeoff: >-
+      Simulators can drift from real systems; refresh recordings regularly.
+    variant: >-
+      Telco: an eval run of an outage-notification agent sends real SMS to 10,000
+      subscribers.
+    line: Agent evals need a simulator, not production.
+    related: [aev-05, aev-14, cicd-08]
+    diagram:
+      bad_label: "Anti-pattern: evals in a staging env wired to prod"
+      good_label: "Fix: sandbox with mocked tools and blocked egress"
+      bad: [["Eval run", "Collections"], ["Staging", "Prod email wired"], ["400 emails", "Real customers"], ["FDCPA risk", "Complaints"]]
+      good: [["Sandbox", "Fake customers"], ["Mocked tools", "Recorded"], ["Egress blocked", "Allow-list only"], ["Reset state", "Each run"]]
+
+  - id: aev-05
+    title: Clean mocks hide real BSS behaviour
+    domain: telco
+    severity: high
+    tags: [fault injection, mocks, realism]
+    scenario: >-
+      A carrier's order agent scores 95% in evals with mocked BSS tools that always
+      return instantly and correctly. In production, the inventory API paginates, the
+      catalog API times out at peak, and address validation returns partial matches.
+      Production success is 61%.
+    analogy: >-
+      Training a pilot only in clear skies, then sending them into a storm.
+    breaks:
+      - Mocks never return errors, delays, pagination or messy data.
+      - The agent never practised recovery.
+      - Evals overstate reliability.
+    root_cause: >-
+      The eval environment is unrealistically clean.
+    where: Eval harness.
+    fix:
+      - Record and replay real tool responses, including errors and edge cases.
+      - Add fault injection (timeouts, 429s, empty results, malformed payloads, partial address matches) at realistic rates.
+      - Score recovery explicitly.
+    detect:
+      - Gap between eval and production success; production error types not covered in evals.
+    tradeoff: >-
+      Realistic simulators take effort; prioritise the top failure types from production
+      logs.
+    variant: >-
+      FinTech: a payments agent's mocks never return a "beneficiary bank unreachable"
+      error, which is common on cross-border rails.
+    line: Test the agent on a bad day.
+    related: [aev-11, aev-04]
+    diagram:
+      bad_label: "Anti-pattern: perfect, instant mocks"
+      good_label: "Fix: replay real responses and inject faults"
+      bad: [["Mocked BSS", "Always perfect"], ["Evals 95%", "Clean world"], ["Prod: timeouts", "Pagination"], ["61% success", "In production"]]
+      good: [["Record/replay", "Real responses"], ["Fault inject", "429, timeout"], ["Messy data", "Partial matches"], ["Score recovery", "Explicitly"]]
+
+  - id: aev-06
+    title: KYC remediation agent passes once, fails three runs in ten
+    domain: fintech
+    severity: high
+    tags: [pass at k, reliability, variance]
+    scenario: >-
+      A bank's KYC-remediation agent refreshes customer due-diligence files. Each eval task
+      is run once and passes 90%. Running each task 10 times shows that only 62% of tasks
+      pass every time. Analysts experience it as unreliable and stop trusting it.
+    analogy: >-
+      A footballer who scores a penalty in practice once and is declared reliable from the
+      spot.
+    breaks:
+      - Agents are stochastic, and long trajectories amplify variance.
+      - Single-trial results describe capability, not reliability.
+      - Users experience every run, not the best one.
+    root_cause: >-
+      Reliability was not measured.
+    where: Eval methodology.
+    fix:
+      - Run k trials per task and report pass@k (succeeds at least once) and pass^k (succeeds every time).
+      - Use pass^k as the release metric for production workflows.
+      - Reduce variance with lower temperature, structured steps and deterministic tools.
+    detect:
+      - Per-task success variance across trials.
+    tradeoff: >-
+      k trials multiply eval cost; use k=5 on a stratified subset.
+    variant: >-
+      Telco: a port-out request handler succeeds on average but fails unpredictably on the
+      same request types.
+    line: Users need pass^k, not pass@k.
+    related: [eval-07]
+    diagram:
+      bad_label: "Anti-pattern: one trial per task"
+      good_label: "Fix: k trials, report pass^k for reliability"
+      bad: [["KYC refresh", "Eval task"], ["1 trial", "Per task"], ["90% pass", "Reported"], ["62% always", "Real reliability"]]
+      good: [["k = 5 trials", "Per task"], ["pass@k", "Capability"], ["pass^k", "Reliability gate"], ["Lower variance", "Structure"]]
+
+  - id: aev-07
+    title: Plan-change agent tested with complete one-line requests
+    domain: telco
+    severity: medium
+    tags: [user simulation, multi-turn, tau-bench]
+    scenario: >-
+      A carrier's plan-change agent is evaluated with requests such as "Move line 2 to
+      the Unlimited Plus plan effective today." Real customers say "My bill is too high",
+      reveal that one line is a child's tablet three turns later, and then change their
+      mind. Task completion in production is much lower than in evals.
+    analogy: >-
+      Practising a sales call with a script where the customer already knows exactly what
+      they want.
+    breaks:
+      - Single-turn, fully specified requests skip clarification.
+      - Real customers give information gradually and change goals.
+      - Policy compliance under conversational pressure is never tested.
+    root_cause: >-
+      No simulated users with realistic behaviour.
+    where: Eval harness.
+    fix:
+      - Use LLM-simulated users with personas, hidden goals and constraints revealed over turns (the approach of tau-bench, which includes a telecom domain).
+      - Score goal completion against the hidden goal and policy compliance.
+      - Seed personas from real conversation patterns.
+    detect:
+      - Completion rate by number of turns; drop-off points in real sessions.
+    tradeoff: >-
+      Simulated users can be unrealistic; spot-check them against real transcripts.
+    variant: >-
+      FinTech: a mortgage-rate-lock agent is tested with complete requests, but borrowers
+      reveal a second applicant midway.
+    line: Simulate the user, not just the request.
+    related: [aev-15]
+    diagram:
+      bad_label: "Anti-pattern: single-turn, fully specified requests"
+      good_label: "Fix: simulated users with hidden goals"
+      bad: [["One-line ask", "Fully specified"], ["No ambiguity", "Never tested"], ["High eval score", "Unrealistic"], ["Prod lower", "Real customers"]]
+      good: [["Persona", "Hidden goal"], ["Reveals slowly", "Over turns"], ["Score goal", "Plus policy"], ["Seed from", "Real chats"]]
+
+  - id: aev-08
+    title: New agent version is 3% better and 4 times the cost
+    domain: fintech
+    severity: medium
+    tags: [efficiency, cost per task, steps]
+    scenario: >-
+      A fraud-investigation agent's new version improves case-resolution accuracy by 3
+      points. Nobody tracked steps or tokens. In production it makes 4 times as many tool
+      calls and LLM calls per case, and the monthly cost jumps from $18k to $70k.
+    analogy: >-
+      A taxi driver who arrives slightly more reliably but takes a route twice as long.
+    breaks:
+      - Success rate was the only metric.
+      - More exploration improved accuracy at large cost.
+      - The budget impact appeared only on the invoice.
+    root_cause: >-
+      Efficiency is not part of the agent's eval.
+    where: Eval metrics.
+    fix:
+      - Track steps, tokens, tool calls, dollars and wall-clock time per task in every eval run.
+      - Compare versions on success per dollar and set budget thresholds.
+      - Look for redundant calls in trajectories.
+    detect:
+      - Cost per task by version in production.
+    tradeoff: >-
+      Some extra cost may be worth it for high-value cases; route by case value.
+    variant: >-
+      Telco: a network-diagnosis agent becomes more thorough and triples NOC API load.
+    line: Efficiency is part of correctness for agents.
+    related: [eval-14, cost-07]
+    diagram:
+      bad_label: "Anti-pattern: success rate is the only metric"
+      good_label: "Fix: success per dollar, step and token budgets"
+      bad: [["New version", "+3 points"], ["Steps unknown", "Not tracked"], ["4x calls", "In prod"], ["$18k to $70k", "Monthly"]]
+      good: [["Track", "Steps, tokens"], ["Success / $", "Compare"], ["Budget gate", "Per task"], ["Trim calls", "Redundant"]]
+
+  - id: aev-09
+    title: Retention agent waives the termination fee under pressure
+    domain: telco
+    severity: high
+    tags: [policy compliance, pressure, adversarial users]
+    scenario: >-
+      A carrier's retention agent may offer approved save offers but must not waive early
+      termination fees. In evals, customers ask politely and the agent complies with
+      policy. In production, customers threaten to post on social media or switch
+      carriers. In 9% of such chats, the agent waives the fee.
+    analogy: >-
+      A security guard trained only on polite visitors who folds when someone shouts.
+    breaks:
+      - Evals contain cooperative users only.
+      - Helpful models bend rules under emotional pressure.
+      - The waiver is possible because the tool allows it.
+    root_cause: >-
+      Policy compliance under pressure was never tested, and limits live in the prompt.
+    where: Eval suite and tool permissions.
+    fix:
+      - Add policy cases with pushy, manipulative and emotional simulated users.
+      - Score whether the agent refuses or escalates correctly.
+      - Remove the waiver capability from the agent's tool, so it can only request a supervisor review.
+    detect:
+      - Waiver and exception rate by agent version and by conversation sentiment.
+    tradeoff: >-
+      Stricter agents may frustrate some customers; give them a clear escalation path.
+    variant: >-
+      FinTech: a bank agent waives late fees for customers who claim hardship without
+      starting the hardship programme.
+    line: Test whether the agent says no when it should.
+    related: [agf-05, prm-16]
+    diagram:
+      bad_label: "Anti-pattern: only polite users in evals"
+      good_label: "Fix: pressure tests and no waiver capability"
+      bad: [["Polite users", "In evals"], ["Threats", "In production"], ["Fee waived", "9% of chats"], ["Revenue loss", "Policy broken"]]
+      good: [["Pushy personas", "Simulated"], ["Score refusal", "Or escalate"], ["Tool removed", "Request review"], ["Monitor", "Exception rate"]]
+
+  - id: aev-10
+    title: 20% failure rate with no idea which decision failed
+    domain: fintech
+    severity: medium
+    tags: [component evals, tool selection, arguments]
+    scenario: >-
+      A corporate-banking servicing agent fails 20% of end-to-end evals. The team cannot
+      tell whether planning, tool choice or arguments are wrong. After building
+      component evals, they find that 70% of failures are wrong date arguments to the
+      statement tool, caused by relative dates ("last month").
+    analogy: >-
+      A car failing its inspection with only "fail" on the report and no list of what
+      failed.
+    breaks:
+      - Only end-to-end results are scored.
+      - Different decision types fail in different ways.
+      - Without localisation, fixes are guesses.
+    root_cause: >-
+      Agent failures are not decomposed by decision type.
+    where: Eval design and trace analysis.
+    fix:
+      - Score spans from traces (tool selection accuracy, argument correctness, plan quality, recovery after errors).
+      - Build small labelled sets per decision type.
+      - Add a date-resolution tool or pre-processing, here, since arguments were the main cause.
+    detect:
+      - Failure taxonomy dashboard per agent version.
+    tradeoff: >-
+      Span-level labelling takes effort; start by automatically classifying failed traces.
+    variant: >-
+      Telco: a billing agent's failures turn out to be mostly passing the account id where
+      the subscription id is needed.
+    line: Decompose agent failures into decision types.
+    related: [eval-13, obs-17]
+    diagram:
+      bad_label: "Anti-pattern: end-to-end score only"
+      good_label: "Fix: span-level scores per decision type"
+      bad: [["20% fail", "End-to-end"], ["Plan? Tool?", "Unknown"], ["Guess fixes", "Prompt edits"], ["No progress", "Weeks"]]
+      good: [["Tool choice", "Accuracy"], ["Arguments", "Correctness"], ["Recovery", "After errors"], ["Top cause", "Dates: 70%"]]
+
+  - id: aev-11
+    title: Port-in agent gives up on the first rejection
+    domain: telco
+    severity: medium
+    tags: [error recovery, robustness]
+    scenario: >-
+      A port-in agent receives a rejection from the losing carrier ("account number
+      mismatch"). The correct behaviour is to ask the customer to confirm the account
+      number and PIN from their old carrier and resubmit. Instead, the agent tells the
+      customer the port failed and to visit a store. Evals never included rejections.
+    analogy: >-
+      A delivery driver who drives home with the parcel because the doorbell didn't work,
+      instead of knocking.
+    breaks:
+      - Only successful paths are tested.
+      - Recovery behaviour is undefined.
+      - Common, fixable errors become customer failures.
+    root_cause: >-
+      Error-recovery is not evaluated or specified.
+    where: Eval suite and agent instructions.
+    fix:
+      - Inject specific rejections (account mismatch, PIN mismatch, number not portable) and define the expected recovery for each.
+      - Score whether the agent recovers correctly, retries appropriately or escalates honestly.
+      - Map rejection codes to recovery actions in the tool response.
+    detect:
+      - Recovery rate per rejection code in production.
+    tradeoff: >-
+      Not every error is recoverable; the eval must also check honest escalation.
+    variant: >-
+      FinTech: an ACH payment agent gives up when a payment returns R03 (no account)
+      instead of asking the customer to re-check the account number.
+    line: Score recovery, not just success.
+    related: [aev-05, agf-11]
+    diagram:
+      bad_label: "Anti-pattern: only successful paths tested"
+      good_label: "Fix: inject rejections and score recovery"
+      bad: [["Port-in", "Submitted"], ["Rejected", "Account mismatch"], ["Gives up", "Go to store"], ["Lost customer", "Fixable error"]]
+      good: [["Inject codes", "Each rejection"], ["Expected fix", "Per code"], ["Score recovery", "Or escalation"], ["Resubmit", "Confirmed data"]]
+
+  - id: aev-12
+    title: Agent says the card is frozen but never called the tool
+    domain: fintech
+    severity: critical
+    tags: [hallucinated actions, claims vs trace]
+    scenario: >-
+      A customer reports a stolen card. The bank's agent replies "I've frozen your card
+      and ordered a replacement." It called the replacement tool but never called
+      freeze_card. Fraudulent transactions continue for two hours.
+    analogy: >-
+      An assistant who tells you the door is locked because they meant to lock it.
+    breaks:
+      - Models narrate actions they intended but didn't take.
+      - Nothing compares claims in the reply with the tool log.
+      - The eval judged the message as correct.
+    root_cause: >-
+      No consistency check between claimed and executed actions.
+    where: Runtime guardrail and eval.
+    fix:
+      - Extract claimed actions from the final reply (classifier or structured output) and compare with the tool-call log; block or correct mismatches.
+      - Make critical actions part of a workflow (stolen card always triggers freeze first) rather than a model choice.
+      - Add this consistency check to every agent eval.
+    detect:
+      - Claim-vs-trace mismatch rate, alerting on any critical action.
+    tradeoff: >-
+      Claim extraction can produce false alarms; tune it on labelled replies.
+    variant: >-
+      Telco: an agent says "I've barred international calls on the stolen phone" without
+      calling the barring tool.
+    line: Every claimed action must appear in the trace.
+    related: [aev-01, obs-07]
+    diagram:
+      bad_label: "Anti-pattern: trust the agent's description of its actions"
+      good_label: "Fix: compare claims with the tool log, workflow for critical actions"
+      bad: [["Stolen card", "Reported"], ["'Card frozen'", "Says agent"], ["No freeze call", "In trace"], ["Fraud 2 hours", "Continues"]]
+      good: [["Freeze first", "Fixed workflow"], ["Extract claims", "From reply"], ["Match trace", "Tool log"], ["Block mismatch", "Or correct"]]
+
+  - id: aev-13
+    title: Framework chosen on a public benchmark fails on BSS workflows
+    domain: telco
+    severity: medium
+    tags: [benchmarks, task suites, selection]
+    scenario: >-
+      A carrier picks an agent framework and model because they top a public coding and
+      web-browsing benchmark. On the carrier's own tasks (change plan, move a line to
+      another account, troubleshoot fiber), the choice ranks third of four candidates.
+    analogy: >-
+      Hiring a chef because they won a baking contest, for a job running a barbecue.
+    breaks:
+      - Public benchmarks don't use your tools, data or policies.
+      - Some public benchmarks are contaminated in training data.
+      - The decision was never tested on internal tasks.
+    root_cause: >-
+      Selection based on public leaderboards instead of an internal task suite.
+    where: Vendor and model selection.
+    fix:
+      - Build an internal task suite from the top 30 real workflows, run in a sandbox.
+      - Use public benchmarks only to shortlist.
+      - Re-run the internal suite for every model or framework change.
+    detect:
+      - Internal suite results per candidate.
+    tradeoff: >-
+      An internal suite takes weeks to build, but it pays off on every later decision.
+    variant: >-
+      FinTech: a bank selects a model on general reasoning benchmarks and it struggles
+      with its specific reconciliation and statement formats.
+    line: Your tasks are the only benchmark that matters.
+    related: [ops-16]
+    diagram:
+      bad_label: "Anti-pattern: pick by public leaderboard"
+      good_label: "Fix: internal task suite from real workflows"
+      bad: [["Leaderboard", "Top rank"], ["Chosen", "Framework + model"], ["Own tasks", "Ranks 3rd"], ["Rework", "Months"]]
+      good: [["Shortlist", "Public scores"], ["Task suite", "Top 30 flows"], ["Sandbox runs", "Each candidate"], ["Decide", "On own tasks"]]
+
+  - id: aev-14
+    title: Agent eval scores swing with live FX rates
+    domain: fintech
+    severity: medium
+    tags: [reproducibility, environment, snapshots]
+    scenario: >-
+      A cross-border payments agent is evaluated against live FX quotes, live account
+      balances and today's date. The same version scores 78% on Monday and 64% on Tuesday,
+      because rates, holidays and balances changed. The team cannot tell whether a change
+      helped.
+    analogy: >-
+      Comparing two runners on different days, one with a tailwind and one in the rain.
+    breaks:
+      - The environment changes between runs.
+      - Expected answers depend on live data.
+      - Run-to-run comparisons are meaningless.
+    root_cause: >-
+      Non-deterministic eval environment.
+    where: Eval infrastructure.
+    fix:
+      - Snapshot and seed environments (balances, rates, holidays), freeze the clock, and replay recorded tool responses.
+      - Version the environment snapshot with the eval set.
+      - Run a separate live smoke test for integration, not for comparisons.
+    detect:
+      - Baseline re-runs on the same snapshot should match closely.
+    tradeoff: >-
+      Snapshots go stale; refresh them on a schedule, re-baselining scores.
+    variant: >-
+      Telco: an order agent's evals change daily because the live catalog and stock
+      levels change.
+    line: Reproducible environments make agent evals comparable.
+    related: [aev-04, cicd-08]
+    diagram:
+      bad_label: "Anti-pattern: evals against live, changing data"
+      good_label: "Fix: frozen clock, seeded data, recorded tools"
+      bad: [["Live FX", "Live balances"], ["Monday 78%", "Same version"], ["Tuesday 64%", "Data changed"], ["Can't compare", "Changes"]]
+      good: [["Snapshot", "Rates, balances"], ["Freeze clock", "Fixed date"], ["Replay tools", "Recorded"], ["Live smoke", "Separate test"]]
+
+  - id: aev-15
+    title: B2B move agent fine at 3 steps, lost at 30
+    domain: telco
+    severity: medium
+    tags: [long horizon, reliability curve]
+    scenario: >-
+      An enterprise-services agent handles office moves (disconnect at old site, order
+      at new site, port numbers, migrate devices). Evals use mostly single-site moves of 3-5
+      steps. Real moves of 10 sites take 30-50 steps. The agent forgets earlier sites, re-
+      orders one circuit twice and misses another.
+    analogy: >-
+      A marathon runner trained only for 5 km.
+    breaks:
+      - Evals skew to short tasks.
+      - Context drift and compounding errors appear only on long runs.
+      - Reliability decays with horizon and nobody measured how fast.
+    root_cause: >-
+      The eval suite doesn't represent long-horizon tasks.
+    where: Eval coverage.
+    fix:
+      - Include long-horizon tasks, and plot success against task length.
+      - Track goal retention (is every site handled exactly once) as a final-state check.
+      - Use a structured task list as agent state, ticking items off, to reduce drift.
+    detect:
+      - Success rate by number of sites or steps.
+    tradeoff: >-
+      Long tasks are slow and expensive to evaluate; run them nightly, not per PR.
+    variant: >-
+      FinTech: an estate-settlement agent works for one account but loses track across 12
+      accounts and 4 beneficiaries.
+    line: Reliability decays with horizon, so measure the curve.
+    related: [aev-07, ctx-02]
+    diagram:
+      bad_label: "Anti-pattern: evals with only short tasks"
+      good_label: "Fix: long tasks, success vs length, task-list state"
+      bad: [["Evals", "3-5 steps"], ["Real move", "30-50 steps"], ["Drift", "Sites forgotten"], ["Duplicate order", "Missed circuit"]]
+      good: [["Long tasks", "10-site moves"], ["Curve", "Success vs length"], ["Task list", "Tick off sites"], ["State check", "Each site once"]]
+
+  - id: aev-16
+    title: Accounts-payable agent changes a vendor's bank details from an email
+    domain: fintech
+    severity: critical
+    tags: [indirect prompt injection, bec, safety evals]
+    scenario: >-
+      A company's AP agent reads the AP inbox and updates vendor records. An attacker
+      spoofs a supplier and emails "our bank details have changed" with new account
+      details. The agent updates the vendor master, and the next $180,000 payment goes to
+      the attacker, a classic business email compromise.
+    analogy: >-
+      A receptionist who updates the payroll bank account of anyone who emails asking
+      nicely.
+    breaks:
+      - Untrusted email content drives a high-risk write action.
+      - Red-team tests covered chat output, not actions.
+      - No out-of-band verification for bank detail changes.
+    root_cause: >-
+      Agent safety evals ignore indirect injection and action risk.
+    where: Safety evals, tool permissions and process controls.
+    fix:
+      - Remove the agent's ability to change bank details; it may only open a change request.
+      - Require out-of-band verification (call-back to a known number) and dual approval for bank-detail changes.
+      - Add injection test emails to the eval suite and score unsafe actions attempted.
+    detect:
+      - Alerts on vendor bank-detail changes followed by payments within 30 days.
+    tradeoff: >-
+      Manual verification slows legitimate changes, which are rare and worth the delay.
+    variant: >-
+      Telco: an email-reading agent receives a request to transfer a business's numbers to
+      another account and starts a port-out.
+    line: For agents, safety is measured in actions.
+    related: [rag-19, sec-02, gov-02]
+    diagram:
+      bad_label: "Anti-pattern: email content drives a bank-detail change"
+      good_label: "Fix: no write capability, call-back, dual approval"
+      bad: [["Spoofed email", "New bank details"], ["AP agent", "Reads inbox"], ["Vendor updated", "By agent"], ["$180k lost", "To attacker"]]
+      good: [["Request only", "No write tool"], ["Call-back", "Known number"], ["Dual approval", "Bank changes"], ["Injection evals", "In CI"]]
+
+  - id: aev-17
+    title: Automated scores look fine, but nobody reads the traces
+    domain: telco
+    severity: medium
+    tags: [human review, qualitative analysis, error analysis]
+    scenario: >-
+      A carrier's agent passes all automated checks for months. Customers start
+      complaining that the agent asks for the same account PIN twice and apologises
+      excessively. None of the automated graders measure repetition or tone.
+    analogy: >-
+      A restaurant that checks food temperatures automatically but never tastes the food.
+    breaks:
+      - Automated graders only find failure modes they were written for.
+      - New failure patterns emerge after model or prompt changes.
+      - No one does qualitative review.
+    root_cause: >-
+      100% automated grading with no human error analysis.
+    where: Eval operating rhythm.
+    fix:
+      - Hold weekly trajectory review sessions on sampled runs, including negative feedback.
+      - Classify findings into a failure taxonomy and write automated checks for new patterns.
+      - Rotate reviewers across product, engineering and care.
+    detect:
+      - Number of new failure modes found per month; time from discovery to automated check.
+    tradeoff: >-
+      Review time is expensive; 1-2 hours a week is enough to find most patterns.
+    variant: >-
+      FinTech: a bank agent's automated scores are fine, but reviews reveal it pushes
+      credit card upgrades in unrelated conversations.
+    line: Read the traces. Then automate what you find.
+    related: [obs-17, eval-05]
+    diagram:
+      bad_label: "Anti-pattern: 100% automated grading"
+      good_label: "Fix: weekly trace review that feeds new checks"
+      bad: [["Auto checks", "All passing"], ["New patterns", "Repeats PIN ask"], ["Not measured", "No grader"], ["Complaints", "Found late"]]
+      good: [["Weekly review", "Sampled traces"], ["Taxonomy", "Classify issues"], ["New checks", "Automated"], ["Rotate", "Reviewers"]]
+
+  - id: aev-18
+    title: Planner prompt change silently breaks the payment executor
+    domain: fintech
+    severity: high
+    tags: [multi agent, contract tests, regression]
+    scenario: >-
+      A bank's bill-pay system has a planner agent and an executor agent. A team improves
+      the planner's prompt and its own evals improve. The planner now writes amounts with
+      thousands separators ("1,250.00"). The executor's parser reads "1" and schedules $1
+      payments, which fail reconciliation.
+    analogy: >-
+      Changing a recipe card's format so the kitchen printer prints garbage, while the
+      recipe itself got better.
+    breaks:
+      - Each agent was evaluated alone.
+      - The message format between agents was an implicit contract.
+      - No end-to-end test ran on the planner change.
+    root_cause: >-
+      No contract tests or system evals for multi-agent changes.
+    where: CI for multi-agent systems.
+    fix:
+      - Define typed handoff schemas with validation (amount as decimal string, no separators).
+      - Add contract tests that validate one agent's outputs against the next agent's schema.
+      - Run end-to-end system evals on any agent change.
+    detect:
+      - Schema validation failures between agents; reconciliation breaks.
+    tradeoff: >-
+      End-to-end evals are slower; run them on merge, and contract tests on every PR.
+    variant: >-
+      Telco: a diagnosis agent's new output format breaks the dispatch agent's parsing of
+      the required technician skill.
+    line: Test agents alone and together.
+    related: [agf-14, mas-03, cicd-12]
+    diagram:
+      bad_label: "Anti-pattern: each agent evaluated in isolation"
+      good_label: "Fix: typed handoffs, contract tests, system evals"
+      bad: [["Planner tweak", "Evals better"], ["'1,250.00'", "New format"], ["Executor reads", "'1'"], ["$1 payments", "Recon breaks"]]
+      good: [["Typed schema", "Decimal string"], ["Contract test", "Every PR"], ["System eval", "On merge"], ["Validate", "At each hop"]]
+
+  - id: aev-19
+    title: Judge approves an answer that contradicts the tool result
+    domain: telco
+    severity: medium
+    tags: [groundedness, judge context, tool outputs]
+    scenario: >-
+      A carrier's billing agent tells a customer their bill includes a $15 late fee. The
+      billing tool result shows no late fee; the $15 was an equipment charge. The LLM judge,
+      which only sees the question and the answer, rates it correct and well explained.
+    analogy: >-
+      Asking someone to check a translation without showing them the original text.
+    breaks:
+      - The judge has no access to the evidence.
+      - It can grade fluency and plausibility only.
+      - Grounding errors pass.
+    root_cause: >-
+      The judge lacks the tool outputs needed to check faithfulness.
+    where: Judge input design.
+    fix:
+      - Pass relevant tool outputs (or the full trace) to the judge.
+      - Use a faithfulness rubric (every factual claim must be supported by tool data).
+      - Add a deterministic check for amounts and dates against tool results.
+    detect:
+      - Judge agreement with human review on grounding cases.
+    tradeoff: >-
+      Bigger judge inputs cost more; pass only the tool results referenced.
+    variant: >-
+      FinTech: a judge approves a claim that a payment cleared, which the payments tool
+      reported as pending.
+    line: A judge needs the evidence to judge grounding.
+    related: [eval-03, aev-12]
+    diagram:
+      bad_label: "Anti-pattern: judge sees only question and answer"
+      good_label: "Fix: give the judge tool outputs and a faithfulness rubric"
+      bad: [["'$15 late fee'", "Agent says"], ["Tool data", "Equipment fee"], ["Judge sees Q+A", "Only"], ["Rated correct", "Ungrounded"]]
+      good: [["Tool outputs", "To the judge"], ["Rubric", "Claims supported"], ["Code check", "Amounts, dates"], ["Grounded", "Verdict"]]
+
+  - id: aev-20
+    title: Offline evals pass while customers redo tasks by hand
+    domain: fintech
+    severity: high
+    tags: [online metrics, human takeover, production]
+    scenario: >-
+      A bank's agent for updating direct debits passes offline evals at 90%. In
+      production, 30% of customers then call or visit a branch to make the same change,
+      because the agent's confirmation was unclear or the change didn't stick. None of
+      this appears in offline metrics.
+    analogy: >-
+      A hotel whose online reviews are great but whose guests keep calling reception to
+      fix their room.
+    breaks:
+      - Offline task distribution differs from real tasks.
+      - Silent failures (customer redoes the task elsewhere) are not linked back.
+      - No online agent metrics.
+    root_cause: >-
+      Offline-only agent evaluation.
+    where: Production measurement.
+    fix:
+      - Track human takeover rate, repeat contact within 7 days on the same intent, undo or reversal rate and escalations.
+      - Join agent sessions to downstream channels (call, branch) by customer and intent.
+      - Sample and grade production traces weekly.
+    detect:
+      - Repeat-contact and takeover dashboards per intent and version.
+    tradeoff: >-
+      Cross-channel joins need data engineering and privacy review.
+    variant: >-
+      Telco: after the agent "changes" a plan, customers call care within days to fix it.
+    line: Human takeover rate is the truest agent metric.
+    related: [eval-11, obs-13]
+    diagram:
+      bad_label: "Anti-pattern: offline evals only"
+      good_label: "Fix: takeover and repeat-contact metrics in production"
+      bad: [["Offline 90%", "Direct debits"], ["Unclear confirm", "In prod"], ["30% redo", "Call or branch"], ["Invisible", "Not linked"]]
+      good: [["Takeover rate", "Per intent"], ["Repeat 7 days", "Cross-channel"], ["Undo rate", "Reversals"], ["Trace grading", "Weekly sample"]]
