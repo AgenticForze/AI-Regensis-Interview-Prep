@@ -1,0 +1,807 @@
+id: llm-evals
+order: 2
+prefix: eval
+title: LLM Evals
+summary: >-
+  An eval suite is a product spec written as tests. If your evals do not fail when
+  customers are unhappy or regulators would be, they measure the wrong thing. In Telco
+  and FinTech that means slicing by intent, product and risk tier, and treating
+  compliance failures as release blockers rather than averages.
+scenarios:
+  - id: eval-01
+    title: Bill-explanation prompt shipped after a vibe check
+    domain: telco
+    severity: high
+    tags: [golden set, regression, billing]
+    scenario: >-
+      A carrier's "explain my bill" assistant gets frequent complaints that it is too
+      long. A product manager adds "Be concise, max 3 sentences" to the prompt, tries ten
+      bills, likes the result and ships it. First-bill questions (proration after a plan
+      change mid-cycle) now get a three-sentence answer that skips the proration, and
+      first-bill calls to care rise 18% in two weeks.
+    analogy: >-
+      Tasting one spoonful from the top of the pot and declaring the whole stew seasoned.
+      The salt sank to the bottom.
+    breaks:
+      - Ten hand-picked bills were all simple, single-line accounts.
+      - The change had a global side effect on complex bills, the cases that drive most calls.
+      - Nothing compared old and new behaviour on a representative set.
+    root_cause: >-
+      Manual spot checks were the release gate, with no versioned golden dataset.
+    where: Release process and eval harness.
+    fix:
+      - Build a golden set of 300-500 real (anonymised) bills covering first bills, proration, roaming, device installments, taxes and credits.
+      - Define pass criteria per case (mentions proration amount, correct total, under N words) and run old vs new on every prompt change.
+      - Block release if any high-volume intent regresses beyond a threshold.
+    detect:
+      - Care call-reason codes for "bill explanation" per bot version.
+      - Weekly eval trend per bill type.
+    tradeoff: >-
+      Building and anonymising the golden set takes a few weeks of effort, but it is
+      reused for every future change.
+    variant: >-
+      FinTech: a "concise" tweak to a card-statement assistant drops the minimum-payment
+      warning that Reg Z disclosures require.
+    line: If it isn't in the eval set, it isn't protected.
+    related: [eval-05, eval-15, prm-02]
+    diagram:
+      bad_label: "Anti-pattern: ship after trying ten bills"
+      good_label: "Fix: golden set of real bills gates every change"
+      bad: [["Be concise", "Prompt tweak"], ["10 simple bills", "Looked fine"], ["Proration lost", "Complex bills"], ["Calls +18%", "First bills"]]
+      good: [["Golden set", "500 real bills"], ["Per-case checks", "Proration, total"], ["Old vs new", "Every change"], ["Gate release", "By intent"]]
+
+  - id: eval-02
+    title: ROUGE scores a collections-call summary that drops the dispute
+    domain: fintech
+    severity: critical
+    tags: [metrics, summarization, fdcpa, collections]
+    scenario: >-
+      A lender auto-summarises collections calls for the next agent. The team evaluates
+      summaries with ROUGE against human summaries and gets 0.61, which looks good. In a
+      compliance review, 7% of summaries omit that the customer disputed the debt. Under
+      the FDCPA, a dispute must stop collection until the debt is validated, so the next
+      agent keeps collecting.
+    analogy: >-
+      Grading a medical handover note by how many words it shares with a model note. A
+      note that leaves out "allergic to penicillin" can still score well.
+    breaks:
+      - ROUGE rewards word overlap, not the presence of critical facts.
+      - A fluent summary missing one key sentence loses little score.
+      - The facts that matter legally are rare and short.
+    root_cause: >-
+      A generic NLP metric was used instead of task-specific, risk-weighted criteria.
+    where: Eval design.
+    fix:
+      - Define required elements per call type (dispute raised, promise to pay amount and date, cease-contact request, hardship) as binary checks.
+      - Score each element with a validated LLM judge or a classifier, and weight compliance elements as must-pass.
+      - Add a structured field extraction (dispute = true/false) that downstream systems read, not just a free-text summary.
+    detect:
+      - Recall of each required element on a labelled set, tracked separately.
+      - Compliance QA sampling of summaries where a dispute keyword appears in the transcript.
+    tradeoff: >-
+      Element checklists take domain effort to define and keep up to date with
+      regulations.
+    variant: >-
+      Telco: care-call summaries miss "customer requested cancellation", so the
+      retention team never calls back and the line churns.
+    line: Measure what customers and regulators care about, not word overlap.
+    related: [eval-04, eval-16]
+    diagram:
+      bad_label: "Anti-pattern: ROUGE against human summaries"
+      good_label: "Fix: required elements as binary must-pass checks"
+      bad: [["Call summary", "Collections"], ["ROUGE 0.61", "Looks good"], ["Dispute missing", "7% of calls"], ["Keeps collecting", "FDCPA breach"]]
+      good: [["Element list", "Dispute, PTP"], ["Binary checks", "Per element"], ["Structured flag", "dispute = true"], ["Must-pass", "Compliance gate"]]
+
+  - id: eval-03
+    title: LLM judge loves retention chats humans rate poorly
+    domain: telco
+    severity: medium
+    tags: [llm as judge, calibration, retention]
+    scenario: >-
+      A retention-chat bot is scored by an LLM judge on "helpfulness" and averages
+      4.6 out of 5. Human QA reviewers score the same chats 2.8, because the bot offers
+      long, friendly answers but rarely presents the save offer the customer qualifies
+      for. Leadership has been reporting the 4.6 for a quarter.
+    analogy: >-
+      A thermometer that was never checked against a real one. It always reads a
+      comfortable 21 degrees, so nobody notices the heating is broken.
+    breaks:
+      - The judge prefers long, polite answers (verbosity and style bias).
+      - Helpfulness was never defined in terms of the business goal (right offer presented).
+      - Judge scores were never compared with human labels.
+    root_cause: >-
+      The evaluator itself was never evaluated.
+    where: Judge design and calibration.
+    fix:
+      - Label 150-200 chats by expert QA reviewers on specific criteria (eligible offer presented, correct price, no false promises).
+      - Rewrite the judge as binary checks per criterion, with reasoning before the verdict and access to the eligibility data.
+      - Measure agreement (precision and recall per criterion, Cohen's kappa) and iterate until acceptable; re-check quarterly.
+    detect:
+      - Running human-judge agreement on a weekly sample.
+      - Correlation between judge scores and the business metric (save rate).
+    tradeoff: >-
+      Human labelling is slow and expensive; keep the calibration set small but
+      representative and refresh it.
+    variant: >-
+      FinTech: a judge rates a robo-advice bot's explanations highly even when the
+      recommended portfolio does not match the client's risk profile.
+    line: A judge is a model too, so evaluate the evaluator.
+    related: [eval-04, eval-12]
+    diagram:
+      bad_label: "Anti-pattern: uncalibrated helpfulness judge"
+      good_label: "Fix: criteria judge calibrated to expert labels"
+      bad: [["Retention chats", "Judged by LLM"], ["Score 4.6", "Likes long text"], ["Humans 2.8", "No offer shown"], ["Wrong KPI", "A quarter lost"]]
+      good: [["Expert labels", "200 chats"], ["Binary criteria", "Offer, price"], ["Agreement", "Kappa, P/R"], ["Re-check", "Quarterly"]]
+
+  - id: eval-04
+    title: Complaint classifier judged on a 1-10 scale
+    domain: fintech
+    severity: medium
+    tags: [rubric, binary criteria, complaints, cfpb]
+    scenario: >-
+      A bank uses an LLM to classify customer complaints into regulatory categories and
+      route them. Quality is tracked with an LLM judge giving a 1-10 "accuracy" score
+      averaging 7.4. Nobody knows what 7.4 means. A regulator exam later finds that
+      complaints alleging discrimination were often classified as general service
+      complaints and not escalated.
+    analogy: >-
+      Rating a restaurant "7 out of 10" without saying whether the problem was the food,
+      the service, or food poisoning.
+    breaks:
+      - A fuzzy scale with no definition gives unstable, uninterpretable scores.
+      - Critical misroutes and minor wording issues get similar scores.
+      - The average hides the rare, high-risk category.
+    root_cause: >-
+      Likert scoring was used instead of explicit, binary criteria tied to outcomes.
+    where: Rubric design.
+    fix:
+      - Evaluate classification as classification, with a confusion matrix against labelled data.
+      - Define binary checks for high-risk routing ("Allegation of discrimination routed to fair-lending queue, yes or no").
+      - Set zero-tolerance thresholds for the high-risk categories, separate from overall accuracy.
+    detect:
+      - Recall per high-risk category, reviewed by compliance monthly.
+    tradeoff: >-
+      Binary criteria need more upfront definition but make every failure actionable.
+    variant: >-
+      Telco: a ticket classifier scored 1-10 hides that outage reports are misrouted to
+      billing, delaying network incident detection.
+    line: Binary criteria beat fuzzy scales.
+    related: [eval-02, eval-09]
+    diagram:
+      bad_label: "Anti-pattern: 1-10 accuracy score from a judge"
+      good_label: "Fix: confusion matrix plus binary high-risk checks"
+      bad: [["Complaints", "Classified"], ["Judge 1-10", "Avg 7.4"], ["Fair-lending", "Misrouted"], ["Exam finding", "Not escalated"]]
+      good: [["Labelled set", "By compliance"], ["Confusion matrix", "Per category"], ["Binary check", "High-risk route"], ["Zero tolerance", "Separate gate"]]
+
+  - id: eval-05
+    title: Eval set frozen before the eSIM-only phone launch
+    domain: telco
+    severity: medium
+    tags: [eval drift, production sampling, esim]
+    scenario: >-
+      A carrier built its chatbot eval set at launch. A year later, a major handset maker
+      ships eSIM-only phones in the market, and eSIM transfer questions jump to 14% of
+      chats. The eval set has three eSIM questions. Evals pass at 94% while eSIM
+      conversations fail half the time and stores are flooded with walk-ins.
+    analogy: >-
+      Studying for this year's exam with last year's past papers when the syllabus has
+      changed.
+    breaks:
+      - The eval set represents last year's traffic mix.
+      - New intents appear with product launches, regulations and seasons.
+      - Nobody compares eval intent mix with production intent mix.
+    root_cause: >-
+      The golden set is static and not fed by production.
+    where: Eval data operations.
+    fix:
+      - Sample production conversations weekly, label failures and add them as eval cases.
+      - Compare intent distribution of the eval set with production and alert on gaps.
+      - Add eval cases before known launches (new devices, price changes, regulatory changes).
+    detect:
+      - Divergence metric between eval and production intent mix.
+      - Failure rate per new intent cluster.
+    tradeoff: >-
+      Continuous labelling needs a small standing team or vendor budget.
+    variant: >-
+      FinTech: a bank's assistant eval set has no questions about a new instant-payments
+      service, which becomes the top contact reason after launch.
+    line: Every production bug becomes a test case.
+    related: [eval-01, eval-17, obs-06]
+    diagram:
+      bad_label: "Anti-pattern: static eval set from launch day"
+      good_label: "Fix: weekly production sampling feeds the eval set"
+      bad: [["Eval set", "Built at launch"], ["eSIM launch", "14% of chats"], ["3 eSIM cases", "Evals 94%"], ["Store walk-ins", "Bot fails"]]
+      good: [["Sample prod", "Weekly"], ["Label failures", "New cases"], ["Mix check", "Eval vs prod"], ["Pre-launch", "Add cases early"]]
+
+  - id: eval-06
+    title: Investment-app assistant tested only on friendly questions
+    domain: fintech
+    severity: high
+    tags: [adversarial, out of scope, coverage]
+    scenario: >-
+      A brokerage app launches an assistant tested with 400 questions written by the
+      product team, all about app features. In the first week, users ask "Should I put my
+      emergency fund into this meme stock?", "Give me a guaranteed 20% strategy", and
+      questions in Hindi and Spanish. The assistant gives stock-specific opinions, which
+      the firm is not licensed to give in this channel.
+    analogy: >-
+      Crash-testing a car only by driving it carefully around the car park.
+    breaks:
+      - The eval set reflects how builders expect the product to be used.
+      - Out-of-scope, adversarial and regulated-advice questions were never tested.
+      - The model's default helpfulness fills the gap.
+    root_cause: >-
+      Eval coverage designed from the feature list, not from real user behaviour and
+      risks.
+    where: Eval dataset design.
+    fix:
+      - Add categories deliberately (out of scope, personalised advice requests, adversarial, ambiguous, multilingual, long inputs).
+      - Seed synthetic cases from real contact-centre logs and social media questions.
+      - Define the expected behaviour for each (decline with education, route to a licensed advisor, answer generally).
+    detect:
+      - Coverage report of eval categories against production intent clusters.
+      - Weekly review of conversations flagged as advice-like by a classifier.
+    tradeoff: >-
+      Broader coverage increases eval cost and time; run the full set nightly and a
+      subset per change.
+    variant: >-
+      Telco: a care bot is never tested on "How do I track my partner's phone?", which
+      touches privacy and stalking risk.
+    line: Test the inputs you didn't design for.
+    related: [eval-10, sec-01]
+    diagram:
+      bad_label: "Anti-pattern: evals written by the builders"
+      good_label: "Fix: adversarial and out-of-scope categories"
+      bad: [["400 questions", "Feature-only"], ["Real users", "Meme stocks"], ["Never tested", "Advice asks"], ["Gives opinions", "Unlicensed"]]
+      good: [["Risk categories", "Advice, adversary"], ["Seed from logs", "Real phrasing"], ["Expected policy", "Decline, route"], ["Coverage map", "Vs production"]]
+
+  - id: eval-07
+    title: Prompt A/B declared a winner on 100 examples
+    domain: telco
+    severity: medium
+    tags: [variance, statistics, confidence intervals]
+    scenario: >-
+      Two prompts for a device-troubleshooting bot are compared on 100 eval cases.
+      Prompt B scores 2 points higher and ships. On the next run, B is 1 point lower than
+      A. The team has spent three weeks chasing what was noise.
+    analogy: >-
+      Flipping a coin ten times, getting six heads, and concluding the coin is biased.
+    breaks:
+      - LLM outputs vary between runs even with the same input.
+      - With 100 cases, the confidence interval is roughly plus or minus 8-10 points.
+      - Single runs and unpaired comparisons exaggerate small differences.
+    root_cause: >-
+      Evals were treated as deterministic measurements.
+    where: Eval methodology.
+    fix:
+      - Run several trials per case and report the mean with confidence intervals (bootstrap).
+      - Use paired comparison on the same cases and count wins, losses and ties.
+      - Compute the minimum detectable effect before the experiment and size the set accordingly.
+    detect:
+      - Re-run the baseline twice to measure run-to-run noise on your set.
+    tradeoff: >-
+      More trials multiply eval cost; use cheaper models for judging, and sample.
+    variant: >-
+      FinTech: a fraud-alert explanation prompt "improves" analyst agreement by 3% on 80
+      cases, which disappears in production.
+    line: A 2% gain on 100 examples is noise.
+    related: [eval-14, eval-17]
+    diagram:
+      bad_label: "Anti-pattern: one run, 100 cases, declare a winner"
+      good_label: "Fix: repeated trials, paired comparison, CIs"
+      bad: [["Prompt A vs B", "100 cases"], ["B +2 points", "One run"], ["Ships B", "Declared winner"], ["Rerun: B -1", "It was noise"]]
+      good: [["Size the set", "Detectable effect"], ["k trials", "Per case"], ["Paired wins", "Same inputs"], ["Bootstrap CI", "Then decide"]]
+
+  - id: eval-08
+    title: KYC extraction few-shots leaked into the eval set
+    domain: fintech
+    severity: high
+    tags: [data leakage, held out, kyc]
+    scenario: >-
+      A neobank uses an LLM to extract fields from identity documents and utility bills
+      for KYC. The prompt includes 12 example documents. Offline accuracy is 98%. In
+      production, accuracy on address extraction is 81%. The 12 prompt examples were also
+      in the 200-document eval set, along with near-duplicates from the same templates.
+    analogy: >-
+      Giving students the exam answers as worked examples, then using the same questions
+      on the exam.
+    breaks:
+      - Few-shot examples and eval cases came from the same pool.
+      - Near-duplicates (same utility provider template) inflate scores.
+      - The eval never saw the long tail of real document layouts.
+    root_cause: >-
+      No separation between prompt-building data and evaluation data.
+    where: Data management for prompts and evals.
+    fix:
+      - Split data into prompt-example, dev and held-out test pools with no overlap, including by template and provider.
+      - Check overlap automatically with hashing and near-duplicate detection.
+      - Build the test set from production samples in proportion to real document types.
+    detect:
+      - Gap between offline and production accuracy, measured on audited production samples.
+    tradeoff: >-
+      Held-out sets reduce the data available for prompt examples; that is the price of
+      honest measurement.
+    variant: >-
+      Telco: a port-in form extractor is tested on the same carrier templates used as
+      examples and fails on smaller carriers' formats.
+    line: Never grade on the answer key you handed out.
+    related: [eval-17, ft-04]
+    diagram:
+      bad_label: "Anti-pattern: few-shot examples also in the eval set"
+      good_label: "Fix: disjoint pools split by template"
+      bad: [["12 examples", "In prompt"], ["Same 12", "In eval set"], ["98% offline", "Inflated"], ["81% in prod", "Addresses"]]
+      good: [["Three pools", "Example/dev/test"], ["Split by", "Template, issuer"], ["Overlap check", "Hash + MinHash"], ["Prod-like test", "Real mix"]]
+
+  - id: eval-09
+    title: 92% overall hides 55% on business billing disputes
+    domain: telco
+    severity: high
+    tags: [slicing, segments, b2b]
+    scenario: >-
+      A carrier's billing assistant scores 92% on its eval set. Small-business customers,
+      with multi-line accounts and pooled data, are 6% of traffic but 30% of revenue at
+      risk. Their dispute questions succeed only 55% of the time. The account-management
+      team learns this from a churned customer.
+    analogy: >-
+      A hospital reporting a great average recovery rate while one ward has a serious
+      infection problem.
+    breaks:
+      - The headline metric is an average weighted by volume.
+      - Small, high-value segments barely move the average.
+      - Nobody looks at slices.
+    root_cause: >-
+      Evaluation reports aggregate scores without segment or risk-tier breakdowns.
+    where: Eval reporting.
+    fix:
+      - Slice every metric by intent, customer segment, product, channel, language and risk tier.
+      - Set per-slice thresholds, and weight by business impact, not just volume.
+      - Report the worst slice next to the mean in every review.
+    detect:
+      - Automated slice report with alerts when any slice falls below its threshold.
+    tradeoff: >-
+      Small slices have wide confidence intervals; oversample them in the eval set.
+    variant: >-
+      FinTech: a bank chatbot is 91% accurate overall but 60% on questions from small-
+      business borrowers about loan payment deferrals.
+    line: Report the worst slice, not just the mean.
+    related: [eval-04, rag-20]
+    diagram:
+      bad_label: "Anti-pattern: one aggregate score"
+      good_label: "Fix: per-slice thresholds weighted by impact"
+      bad: [["Eval: 92%", "All traffic"], ["SMB = 6%", "Of volume"], ["SMB disputes", "55% success"], ["Churned SMB", "Found late"]]
+      good: [["Slice metrics", "Segment, intent"], ["Oversample", "Small slices"], ["Per-slice bar", "Weighted"], ["Worst slice", "In every review"]]
+
+  - id: eval-10
+    title: No safety suite before the investing assistant launch
+    domain: fintech
+    severity: critical
+    tags: [safety, red team, jailbreak, regulated advice]
+    scenario: >-
+      A fintech launches a budgeting and investing assistant. Within days, a user
+      jailbreaks it into saying a specific crypto token offers "guaranteed returns" and
+      posts the screenshot. The firm faces press coverage and a regulator inquiry about
+      misleading financial promotions.
+    analogy: >-
+      Testing that a lock opens with the right key but never testing whether it opens
+      with a paperclip.
+    breaks:
+      - Quality evals use normal traffic, where jailbreaks are rare.
+      - Nobody owned adversarial testing.
+      - Output filters checked toxicity but not financial promotion rules.
+    root_cause: >-
+      Safety and compliance were not a separate, blocking test suite.
+    where: Eval suite and release gates.
+    fix:
+      - Build a red-team suite covering jailbreaks, prompt injection, PII leakage, guaranteed-return claims, specific securities recommendations and unlicensed advice.
+      - Add an output policy check for financial-promotion rules ("guaranteed", return promises, missing risk warnings).
+      - Make the suite a release blocker with zero tolerance for critical categories, and refresh it with new public jailbreak techniques.
+    detect:
+      - Attack success rate per category, tracked per release.
+      - Production classifier for promotion-like outputs with human review.
+    tradeoff: >-
+      Strict output filters cause some false refusals; measure the false-refusal rate
+      alongside.
+    variant: >-
+      Telco: a care bot is manipulated into revealing another subscriber's address,
+      a CPNI violation.
+    line: Safety is a separate test suite with zero tolerance.
+    related: [eval-06, sec-01, sec-08]
+    diagram:
+      bad_label: "Anti-pattern: quality evals only"
+      good_label: "Fix: blocking red-team suite plus output policy"
+      bad: [["Quality evals", "Normal traffic"], ["Jailbreak", "In first week"], ["Guaranteed", "Returns claim"], ["Regulator", "Inquiry"]]
+      good: [["Red-team suite", "Per category"], ["Policy check", "Promotion rules"], ["Zero tolerance", "Release gate"], ["Refresh", "New techniques"]]
+
+  - id: eval-11
+    title: Offline gains that never move first-contact resolution
+    domain: telco
+    severity: medium
+    tags: [online metrics, business outcomes, a/b testing]
+    scenario: >-
+      Over six months, a carrier's chatbot team raises its offline answer-quality score
+      from 71% to 86%. First-contact resolution and repeat-contact rate do not change.
+      The offline set measured whether answers were correct, but customers mostly needed
+      the bot to complete actions (reset voicemail PIN, pay a bill), which it could not
+      do.
+    analogy: >-
+      Training a sprinter's form in front of a mirror for months without ever timing a
+      race.
+    breaks:
+      - The offline metric was a proxy that did not correlate with the business outcome.
+      - Nobody validated the proxy against online results.
+      - The real failure (no action capability) was invisible to the offline eval.
+    root_cause: >-
+      Offline evals were never linked to online business metrics.
+    where: Measurement strategy.
+    fix:
+      - Track online outcomes (containment with no repeat contact in 7 days, task completion, CSAT, transfer reason).
+      - Run A/B tests for significant changes and check whether offline gains predict online gains.
+      - Analyse failed sessions to find what the offline set does not measure.
+    detect:
+      - Correlation between offline score changes and online metric changes across releases.
+    tradeoff: >-
+      A/B testing needs traffic and time; use it for big changes and offline evals for
+      fast iteration.
+    variant: >-
+      FinTech: a bank bot's answer quality improves but call deflection stays flat,
+      because most callers want to dispute a transaction, which the bot cannot start.
+    line: Offline evals are a proxy, so validate the proxy.
+    related: [aev-20, obs-01]
+    diagram:
+      bad_label: "Anti-pattern: optimise an unvalidated offline score"
+      good_label: "Fix: link offline evals to online outcomes"
+      bad: [["Offline score", "71% to 86%"], ["FCR flat", "No change"], ["Needed actions", "PIN, payment"], ["Proxy wrong", "6 months"]]
+      good: [["Online metrics", "7-day repeat"], ["A/B test", "Big changes"], ["Correlate", "Offline vs online"], ["Study failures", "Find gaps"]]
+
+  - id: eval-12
+    title: Same model grades its own dispute letters
+    domain: fintech
+    severity: medium
+    tags: [self-preference, judge model, reference answers]
+    scenario: >-
+      A bank drafts chargeback dispute letters with model X and evaluates them with
+      model X as the judge, with no reference letters. The judge passes 96%. Network
+      reviewers reject 15% for missing required elements, the same omissions the judge
+      overlooked.
+    analogy: >-
+      Letting a student grade their own exam. They make the same mistakes when grading as
+      they did when answering.
+    breaks:
+      - The generator and judge share blind spots.
+      - Self-preference bias makes a model rate its own style highly.
+      - No reference answers or required-element lists anchor the judgement.
+    root_cause: >-
+      An unanchored self-judge.
+    where: Judge design.
+    fix:
+      - Use a different (often stronger) model family as judge, or several judges.
+      - Give the judge a checklist of required elements and reference letters.
+      - Validate the judge on letters that networks actually rejected.
+    detect:
+      - Agreement between the judge and the network outcome (accepted or rejected).
+    tradeoff: >-
+      A stronger judge costs more per evaluation; sample rather than judging everything.
+    variant: >-
+      Telco: the same model writes and judges outage notifications, missing that it
+      never states the estimated restoration time.
+    line: Don't let the student grade their own exam.
+    related: [eval-03]
+    diagram:
+      bad_label: "Anti-pattern: model X judges model X, no references"
+      good_label: "Fix: different judge, checklist, real outcomes"
+      bad: [["Model X writes", "Dispute letter"], ["Model X judges", "No reference"], ["96% pass", "Shared blind spot"], ["15% rejected", "By networks"]]
+      good: [["Other judge", "Different family"], ["Checklist", "Required elements"], ["References", "Accepted letters"], ["Validate", "Vs network result"]]
+
+  - id: eval-13
+    title: Order-capture pipeline regresses and nobody knows which step
+    domain: telco
+    severity: medium
+    tags: [component evals, pipeline, order capture]
+    scenario: >-
+      A B2B carrier automates order capture from customer emails: classify request,
+      extract services and sites, validate against the catalog, create a draft order
+      (TMF622). Order accuracy drops from 88% to 74% after a release that touched three
+      steps. The team spends a week bisecting.
+    analogy: >-
+      A factory line that only inspects finished cars. When defects rise, nobody knows
+      which station caused them.
+    breaks:
+      - Only end-to-end order accuracy is measured.
+      - Errors compound across steps and mask each other.
+      - Changes to several steps ship together.
+    root_cause: >-
+      No component-level (unit) evals for a multi-step pipeline.
+    where: Eval design for pipelines.
+    fix:
+      - Evaluate each stage on its own labelled set (classification accuracy, extraction field-level F1, validation precision).
+      - Store intermediate outputs in traces so failures can be attributed to a stage.
+      - Run stage evals in CI for any change to that stage, and end-to-end evals before release.
+    detect:
+      - Stage-level dashboards; a drop in one stage's metric pinpoints the regression.
+    tradeoff: >-
+      Labelling intermediate outputs costs more than labelling only the final result.
+    variant: >-
+      FinTech: an invoice-to-payment pipeline (classify, extract, match PO, schedule ACH)
+      regresses and the team cannot tell whether extraction or matching broke.
+    line: Unit tests and integration tests apply to LLM systems too.
+    related: [rag-16, aev-10]
+    diagram:
+      bad_label: "Anti-pattern: only end-to-end order accuracy"
+      good_label: "Fix: per-stage evals plus end-to-end"
+      bad: [["Email to order", "4 stages"], ["Release", "3 stages changed"], ["88% to 74%", "End-to-end"], ["Week bisecting", "No attribution"]]
+      good: [["Classify eval", "Accuracy"], ["Extract eval", "Field F1"], ["Validate eval", "Precision"], ["E2E eval", "Before release"]]
+
+  - id: eval-14
+    title: Best fraud-summary prompt is too slow and too costly
+    domain: fintech
+    severity: medium
+    tags: [cost, latency, pareto]
+    scenario: >-
+      A fraud-operations team picks the prompt and model with the highest summary quality
+      for alert triage. It is 4 points better than the runner-up but takes 11 seconds and
+      costs 6 times as much. At 40,000 alerts a day, it exceeds the budget and slows
+      analysts, who skip the summary.
+    analogy: >-
+      Choosing a delivery van by top speed alone, then discovering it can't fit through
+      the warehouse door.
+    breaks:
+      - The leaderboard ranks only on quality.
+      - Latency and cost were checked after the decision.
+      - The quality gain did not change analyst decisions.
+    root_cause: >-
+      Quality, latency and cost were evaluated separately rather than as one decision.
+    where: Model and prompt selection.
+    fix:
+      - Report quality, p95 latency and cost per item for every candidate together.
+      - Pick from the Pareto frontier, using the business constraint (under 3 s, budget per alert).
+      - Measure whether the quality difference changes decisions (analyst agreement), not just scores.
+    detect:
+      - Cost per alert and summary usage rate in production.
+    tradeoff: >-
+      A cheaper model may need better prompts or a small fine-tune to close the gap.
+    variant: >-
+      Telco: the most accurate network-incident summary model is too slow for the NOC's
+      5-minute update cycle.
+    line: Quality, latency and cost are one decision.
+    related: [cost-01, cost-02]
+    diagram:
+      bad_label: "Anti-pattern: choose on quality alone"
+      good_label: "Fix: choose on the quality-latency-cost frontier"
+      bad: [["Best quality", "+4 points"], ["11 s per alert", "6x cost"], ["40k alerts/day", "Over budget"], ["Analysts skip", "Too slow"]]
+      good: [["Score all 3", "Q, p95, cost"], ["Pareto set", "Candidates"], ["Constraints", "Under 3 s, budget"], ["Decision test", "Changes outcome?"]]
+
+  - id: eval-15
+    title: Prompt tweak breaks the B2B quote JSON for a key account
+    domain: telco
+    severity: high
+    tags: [ci gate, regression, structured output]
+    scenario: >-
+      An engineer tweaks a B2B quoting assistant's prompt to improve the tone of the
+      cover note. The merge goes straight to production. The JSON quote block now
+      sometimes includes a trailing comment, which breaks the CPQ import. A key enterprise
+      customer's renewal quote fails for two days.
+    analogy: >-
+      Changing the font on a form and accidentally moving the boxes the scanner reads.
+    breaks:
+      - No automatic eval runs on pull requests.
+      - The change looked unrelated to the JSON output.
+      - Format regressions only surface downstream.
+    root_cause: >-
+      Evals are run manually, not as a CI gate.
+    where: CI pipeline.
+    fix:
+      - Run a fast eval subset (including schema validation and key intents) on every pull request that touches prompts, models or tools.
+      - Run the full suite nightly and before releases.
+      - Block merge on threshold breaches, and show the diff of eval results in the PR.
+    detect:
+      - Downstream parse-failure rate as an alert.
+    tradeoff: >-
+      PR evals add a few minutes and API cost to every change; keep the PR subset under 5
+      minutes.
+    variant: >-
+      FinTech: a tone change in a payment-instruction assistant breaks the ISO 20022
+      field mapping for a corporate client.
+    line: Evals belong in CI, like unit tests.
+    related: [cicd-01, eval-18]
+    diagram:
+      bad_label: "Anti-pattern: evals run when someone remembers"
+      good_label: "Fix: eval gate on every pull request"
+      bad: [["Tone tweak", "Cover note"], ["Merged", "No evals"], ["JSON broken", "Trailing comment"], ["Quote fails", "Key account"]]
+      good: [["PR opened", "Prompt change"], ["Fast subset", "Schema + intents"], ["Diff in PR", "Old vs new"], ["Block merge", "On breach"]]
+
+  - id: eval-16
+    title: Engineers label SAR narrative quality
+    domain: fintech
+    severity: high
+    tags: [labels, domain experts, aml, sar]
+    scenario: >-
+      An AML team uses an LLM to draft Suspicious Activity Report narratives. Engineers
+      built the eval set and labelled 200 drafts as good or bad. Evals pass at 93%. A
+      quality review by senior investigators finds 31% of drafts miss the who, what,
+      when, where and why elements regulators expect.
+    analogy: >-
+      Having the kitchen staff grade a surgeon's notes. They can check spelling, not
+      medicine.
+    breaks:
+      - Labellers lacked domain knowledge of what a strong SAR narrative needs.
+      - The labels rewarded fluent writing over regulatory completeness.
+      - No labelling guidelines or agreement measurement.
+    root_cause: >-
+      Eval labels came from non-experts on an expert task.
+    where: Labelling process.
+    fix:
+      - Have senior investigators write labelling guidelines with examples of strong and weak narratives.
+      - Have experts label (or review) the golden set, and measure inter-annotator agreement.
+      - Encode required elements as checklist criteria that a judge can then apply at scale.
+    detect:
+      - Ongoing expert QA sample compared with eval results.
+    tradeoff: >-
+      Expert time is scarce and expensive; use it for guidelines and a small, high-quality
+      set, then scale with a calibrated judge.
+    variant: >-
+      Telco: engineers label network fault-diagnosis answers, but only NOC engineers can
+      tell whether the suggested root cause is plausible.
+    line: Your eval is only as good as your labels.
+    related: [eval-03, eval-02]
+    diagram:
+      bad_label: "Anti-pattern: engineers label expert work"
+      good_label: "Fix: expert guidelines, expert labels, then scale"
+      bad: [["SAR drafts", "By LLM"], ["Engineers label", "Fluency"], ["Evals 93%", "Looks great"], ["31% incomplete", "Expert review"]]
+      good: [["Guidelines", "By investigators"], ["Expert labels", "Golden set"], ["Agreement", "Inter-annotator"], ["Scaled judge", "Checklist"]]
+
+  - id: eval-17
+    title: Fifty prompt iterations overfit the eval set
+    domain: telco
+    severity: medium
+    tags: [overfitting, held out, dev test split]
+    scenario: >-
+      A carrier's plan-recommendation bot team iterates its prompt 50 times against the
+      same 250 eval cases until it hits 99%. In production, recommendation acceptance
+      drops slightly. The prompt now contains special-case rules for specific eval
+      phrasings.
+    analogy: >-
+      A student who memorises the practice test answers instead of learning the subject.
+    breaks:
+      - The same set is used for tuning and for reporting.
+      - Each iteration fits quirks of those 250 cases.
+      - Generalisation to new phrasing gets worse.
+    root_cause: >-
+      No held-out test set.
+    where: Eval methodology.
+    fix:
+      - Split into a dev set (iterate freely) and a test set (touch rarely, report from it).
+      - Refresh the test set with new production samples regularly.
+      - Review the prompt for rules that mention specific cases.
+    detect:
+      - Gap between dev and test scores; a widening gap signals overfitting.
+    tradeoff: >-
+      Splitting means fewer cases to iterate on; grow the dev set from production.
+    variant: >-
+      FinTech: a loan-FAQ prompt tuned to 100% on its eval set mishandles slightly
+      reworded questions about payment holidays.
+    line: Hold out a set you never tune on.
+    related: [eval-08, eval-05]
+    diagram:
+      bad_label: "Anti-pattern: tune and report on the same 250 cases"
+      good_label: "Fix: dev set to iterate, held-out test to report"
+      bad: [["250 cases", "One set"], ["50 iterations", "Same set"], ["99% eval", "Special rules"], ["Prod worse", "Overfit"]]
+      good: [["Dev set", "Iterate freely"], ["Test set", "Held out"], ["Refresh test", "From prod"], ["Watch gap", "Dev vs test"]]
+
+  - id: eval-18
+    title: Payment instructions from emails fail to parse 3% of the time
+    domain: fintech
+    severity: high
+    tags: [structured output, schema validation, payments]
+    scenario: >-
+      A corporate-banking operations team uses an LLM to turn client emails into payment
+      instructions (beneficiary, amount, currency, value date). The evals check whether
+      fields are correct but not whether the JSON validates. 3% of outputs fail schema
+      validation in production, landing in an exceptions queue and missing cut-off times.
+    analogy: >-
+      Checking that a letter says the right things but not whether the envelope has a
+      valid address.
+    breaks:
+      - Free-form generation sometimes produces extra prose, wrong types or missing fields.
+      - Evals graded content, not format.
+      - Downstream systems need strict schemas.
+    root_cause: >-
+      No deterministic format checks in evals, and no structured-output enforcement at
+      runtime.
+    where: Output contract and eval suite.
+    fix:
+      - Use the provider's structured outputs or tool calling with a JSON schema, and validate with Pydantic.
+      - On validation failure, retry once with the error message, then route to a human.
+      - Add schema validity and field-level accuracy as separate eval metrics, measured by code not a judge.
+      - Validate business rules in code too (IBAN checksum, currency codes, cut-off times).
+    detect:
+      - Parse-failure rate and exceptions-queue volume per model version.
+    tradeoff: >-
+      Strict schemas can reject valid edge cases; version the schema and review rejects.
+    variant: >-
+      Telco: an order-intake bot produces addresses that fail the serviceability API
+      format 4% of the time.
+    line: Check format with code, not with a judge.
+    related: [prm-06, eval-15]
+    diagram:
+      bad_label: "Anti-pattern: grade content, ignore format"
+      good_label: "Fix: schema-enforced output, code checks, retry"
+      bad: [["Client email", "Pay request"], ["Free-form JSON", "From LLM"], ["3% invalid", "Schema fails"], ["Missed cut-off", "Exceptions"]]
+      good: [["Structured out", "JSON schema"], ["Pydantic", "Plus IBAN check"], ["Retry once", "Then human"], ["Metric", "Parse failures"]]
+
+  - id: eval-19
+    title: Unpinned model alias changes refusal behaviour overnight
+    domain: telco
+    severity: high
+    tags: [model versioning, pinning, canary eval]
+    scenario: >-
+      A carrier's care bot calls a model through a "latest" alias. The provider updates
+      the model behind it. With no deployment on the carrier's side, the bot starts
+      refusing to discuss account security topics such as SIM PIN resets, and transfers
+      to agents rise 12% in a day.
+    analogy: >-
+      Building on a library that auto-updates to the newest major version every night.
+    breaks:
+      - The model is a dependency that changed without a release.
+      - No scheduled eval ran against production configuration.
+      - The team assumed "nothing deployed, nothing changed".
+    root_cause: >-
+      Unpinned model versions and no continuous canary evaluation.
+    where: Model configuration and monitoring.
+    fix:
+      - Pin exact model versions in config.
+      - Evaluate new versions offline before switching, as a normal change with a PR.
+      - Run a scheduled canary eval (hourly or daily) against production configuration and alert on drift.
+      - Track provider deprecation dates on a calendar.
+    detect:
+      - Canary eval drift, plus transfer-rate and refusal-rate monitoring.
+    tradeoff: >-
+      Pinning means you must actively upgrade before deprecation; plan it in.
+    variant: >-
+      FinTech: a bank's KYC extraction accuracy shifts after a provider update to an
+      unpinned alias.
+    line: The model is a dependency, so pin it and test upgrades.
+    related: [ops-16, cicd-06]
+    diagram:
+      bad_label: "Anti-pattern: call the model through a 'latest' alias"
+      good_label: "Fix: pin versions, canary evals, planned upgrades"
+      bad: [["'latest' alias", "In config"], ["Provider update", "Overnight"], ["New refusals", "SIM PIN topics"], ["Transfers +12%", "No deploy"]]
+      good: [["Pin version", "Exact id"], ["Eval upgrade", "Via PR"], ["Canary eval", "Hourly"], ["Deprecation", "On calendar"]]
+
+  - id: eval-20
+    title: Eval dashboard with no owner and no threshold
+    domain: fintech
+    severity: medium
+    tags: [governance, ownership, thresholds]
+    scenario: >-
+      A bank's GenAI platform team publishes an eval dashboard for 14 use cases. The
+      mortgage assistant shows 81% faithfulness. Nobody knows whether that is acceptable,
+      no team owns the number, and it slowly drops to 73% over a quarter before a
+      complaint review notices.
+    analogy: >-
+      A car dashboard with gauges but no red zones. You see the number change but not
+      when to stop.
+    breaks:
+      - Metrics have no target, owner or defined action.
+      - Gradual decline does not trigger any decision.
+      - Model risk management has no evidence the system stayed within tolerance.
+    root_cause: >-
+      Evals were treated as reporting, not as controls.
+    where: Governance and operating model.
+    fix:
+      - Agree launch and ongoing thresholds per metric with the product owner and model risk (for example SR 11-7 style monitoring).
+      - Assign an owner per use case and metric, and define the action a breach triggers (investigate, roll back, disable).
+      - Alert on threshold breaches and on sustained trends.
+    detect:
+      - Monthly control attestation by the owner.
+    tradeoff: >-
+      Thresholds can be set too tight and cause alert fatigue; review them quarterly.
+    variant: >-
+      Telco: a care-bot containment metric drifts down for months because no single team
+      owns it after a reorganisation.
+    line: Every metric needs a threshold and an owner.
+    related: [gov-01, obs-08]
+    diagram:
+      bad_label: "Anti-pattern: metrics with no owner or target"
+      good_label: "Fix: thresholds, owners and breach actions"
+      bad: [["Dashboard", "14 use cases"], ["81% faithful", "OK or not?"], ["Slow decline", "To 73%"], ["Found late", "By complaints"]]
+      good: [["Threshold", "Per metric"], ["Owner", "Per use case"], ["Breach action", "Rollback, disable"], ["Attestation", "Monthly"]]
