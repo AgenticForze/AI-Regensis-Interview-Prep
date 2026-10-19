@@ -1,0 +1,31 @@
+title: Coach agent architecture
+legend: Purple = LLM, teal = deterministic, gray = data
+lanes:
+  - name: Clients
+    nodes:
+      - {id: desktop, title: Claude + skill, sub: "Desktop, Code", type: channel}
+      - {id: cli, title: Coach CLI, sub: agent/coach.py, type: channel}
+      - {id: site, title: Website, sub: "JS engine, no LLM", type: channel}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: Coach agent, sub: Claude tool loop, type: agent, kind: agent}
+      - {id: extract, title: Spec extractor, sub: Forced tool call, type: agent, kind: agent}
+      - {id: mcp, title: MCP server, sub: 12 tools, type: gateway, kind: good}
+  - name: Deterministic tools
+    nodes:
+      - {id: catalog, title: Catalog tools, sub: "Search, get", kind: good, type: tool_read}
+      - {id: coachtools, title: Coach tools, sub: "Question, rubric", kind: good, type: tool_write}
+      - {id: engine, title: Review engine, sub: "Rules, fix, render", kind: good, type: tool_read}
+  - name: Data
+    nodes:
+      - {id: scen, title: 360 scenarios, sub: YAML catalog, type: system_of_record}
+      - {id: progress, title: Progress DB, sub: SQLite, type: system_of_record}
+      - {id: rules, title: Rules + designs, sub: "22 rules, 10 refs", type: system_of_record}
+edges:
+  - {from: desktop, to: mcp}
+  - {from: cli, to: extract}
+  - {from: mcp, to: engine}
+  - {from: catalog, to: scen}
+  - {from: coachtools, to: progress}
+  - {from: engine, to: rules}
+bus: {from: agent, to: [catalog, coachtools, engine]}

@@ -9,6 +9,7 @@
     "queue", "external_agent", "spacer",
   ]);
   const PURPLE = new Set(["agent", "router"]);
+  const NODE_KEYS = new Set(["id", "title", "sub", "type", "attrs", "kind", "span"]);
   const MAX_PER_LANE = 4;
   const INNER_W = 605, GAP_ARCH = 30, TITLE_PX = 7.3, SUB_PX = 6.0;
   const BEFORE_LEGEND = "Red numbered markers = failure points";
@@ -57,6 +58,8 @@
       for (const n of lane.nodes) {
         if (ids.has(n.id)) errs.push(`duplicate node id '${n.id}'`);
         ids.add(n.id);
+        const extra = Object.keys(n).filter((k) => !NODE_KEYS.has(k)).sort();
+        if (extra.length) errs.push(`node '${n.id}': unexpected keys ${JSON.stringify(extra)} (quote labels that contain commas)`);
         if (!NODE_TYPES.has(n.type)) errs.push(`node '${n.id}': unknown type '${n.type}'`);
         if (n.type !== "spacer") {
           const w = (usable * (n.span || 1)) / total;

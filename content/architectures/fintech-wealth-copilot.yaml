@@ -13,7 +13,7 @@ lanes:
   - name: Orchestration
     nodes:
       - {id: agent, title: Advisor copilot, sub: Drafts reviews, type: agent, attrs: {budget: true}}
-      - {id: memory, title: Client memory, sub: Goals, notes, type: memory}
+      - {id: memory, title: Client memory, sub: "Goals, notes", type: memory}
   - name: Knowledge and tools
     nodes:
       - {id: research, title: Research search, sub: Notes + reports, type: retriever}
@@ -21,7 +21,7 @@ lanes:
       - {id: holdings, title: Holdings, sub: Portfolio data, type: tool_read}
   - name: Systems of record
     nodes:
-      - {id: crm, title: CRM + custody, sub: Clients, holdings, type: system_of_record}
+      - {id: crm, title: CRM + custody, sub: "Clients, holdings", type: system_of_record}
 edges:
   - {from: channel, to: agent}
   - {from: agent, to: memory, two_way: true}

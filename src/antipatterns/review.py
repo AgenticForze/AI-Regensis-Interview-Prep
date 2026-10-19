@@ -29,6 +29,7 @@ NODE_TYPES = {
     "queue", "external_agent", "spacer",
 }
 PURPLE_TYPES = {"agent", "router"}
+NODE_KEYS = {"id", "title", "sub", "type", "attrs", "kind", "span"}
 MAX_PER_LANE = 4
 BEFORE_LEGEND = "Red numbered markers = failure points"
 AFTER_LEGEND = "Teal = new or changed control"
@@ -111,6 +112,9 @@ def validate_spec(spec: dict) -> list[str]:
             if n.get("id") in ids:
                 errs.append(f"duplicate node id '{n.get('id')}'")
             ids.add(n.get("id"))
+            extra = set(n) - NODE_KEYS
+            if extra:
+                errs.append(f"node '{n.get('id')}': unexpected keys {sorted(extra)} (quote labels that contain commas)")
             if n.get("type") not in NODE_TYPES:
                 errs.append(f"node '{n.get('id')}': unknown type '{n.get('type')}'")
             if n.get("type") != "spacer":
