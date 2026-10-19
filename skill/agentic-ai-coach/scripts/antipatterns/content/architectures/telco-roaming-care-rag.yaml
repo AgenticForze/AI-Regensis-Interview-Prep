@@ -1,0 +1,29 @@
+title: Roaming care assistant
+domain: telco
+summary: App and IVR assistant that answers roaming and plan questions from tariff PDFs with a semantic cache.
+scenario: >-
+  A care assistant in the carrier's app and IVR answers roaming, plan and bill questions.
+  It retrieves from rate-plan guides and roaming tariff PDFs, looks up the customer's
+  account, and caches frequent answers in a semantic cache to save cost.
+lanes:
+  - name: Channel
+    nodes:
+      - {id: channel, title: App + IVR, sub: Care questions, type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: Care assistant, sub: Answers + explains, type: agent, attrs: {budget: true}}
+      - {id: cache, title: Semantic cache, sub: Frequent answers, type: cache}
+  - name: Knowledge and tools
+    nodes:
+      - {id: rag, title: Tariff retrieval, sub: Roaming PDFs, type: retriever, attrs: {structured_facts: true, public: true}}
+      - {id: account, title: Account lookup, sub: TMF637 inventory, type: tool_read}
+  - name: Systems of record
+    nodes:
+      - {id: catalog, title: Product catalog, sub: TMF620, type: system_of_record}
+      - {id: crm, title: CRM + inventory, sub: Customer, type: system_of_record}
+edges:
+  - {from: channel, to: agent}
+  - {from: agent, to: cache, two_way: true}
+  - {from: account, to: crm}
+bus: {from: agent, to: [rag, account]}

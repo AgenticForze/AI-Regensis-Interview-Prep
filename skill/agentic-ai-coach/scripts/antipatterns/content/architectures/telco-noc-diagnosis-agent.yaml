@@ -1,0 +1,29 @@
+title: NOC diagnosis agent
+domain: telco
+summary: Network-operations agent that reads alarms, runs diagnostic scripts and pushes configuration fixes.
+scenario: >-
+  A NOC agent receives alarms, searches runbooks, writes and runs Python diagnostic
+  scripts against telemetry, and can push configuration changes to network elements to
+  restore service. Engineers watch a dashboard of its actions.
+lanes:
+  - name: Inputs
+    nodes:
+      - {id: alarms, title: Alarm stream, sub: TMF642 alarms, type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: NOC agent, sub: Diagnose + fix, type: agent}
+      - {id: runbooks, title: Runbook search, sub: Internal wiki, type: retriever, attrs: {acl_filter: true}}
+  - name: Tools
+    nodes:
+      - {id: code, title: Run script, sub: Python, type: tool_code}
+      - {id: kpi, title: KPI query, sub: Telemetry, type: tool_read}
+      - {id: config, title: Push config, sub: Network element, type: tool_write, attrs: {irreversible: true}}
+  - name: Systems of record
+    nodes:
+      - {id: nms, title: Network mgmt, sub: NMS + inventory, type: system_of_record}
+edges:
+  - {from: alarms, to: agent}
+  - {from: agent, to: runbooks, two_way: true}
+  - {from: config, to: nms}
+bus: {from: agent, to: [code, kpi, config]}

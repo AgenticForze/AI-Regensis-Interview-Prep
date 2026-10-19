@@ -1,0 +1,748 @@
+id: data-pipelines
+order: 18
+prefix: data
+title: Data Pipelines & Governance for AI
+summary: >-
+  An AI system is only as good as the data that reaches it: knowledge content, structured
+  records behind tools, events, labels and logs. Production pipelines need data contracts,
+  quality checks, freshness SLOs, lineage, classification, permission sync and owners, the
+  same disciplines as analytics data, applied to documents and embeddings too.
+scenarios:
+  - id: data-01
+    title: CRM export column renamed, plan names vanish from the index
+    domain: telco
+    severity: high
+    tags: [data contracts, schema changes]
+    scenario: >-
+      A carrier's knowledge pipeline ingests a nightly CRM export to build customer-context
+      documents for agent assist. The CRM team renames plan_name to product_offering_name.
+      The pipeline doesn't fail; it fills the field with blanks. For two weeks, agent assist
+      shows customers with no plan, and suggestions are generic.
+    analogy: >-
+      A supplier changing the label on a box, and your warehouse quietly filing it as
+      empty.
+    breaks:
+      - No contract between producer and consumer.
+      - Missing fields default to blank instead of failing.
+      - No data-quality checks on outputs.
+    root_cause: >-
+      No data contracts or schema validation.
+    where: Ingestion pipeline.
+    fix:
+      - Define data contracts (schema, required fields, semantics, owner) with upstream teams, and test them in the producer's CI.
+      - Validate schemas at ingestion and fail loudly on missing required fields.
+      - Add quality checks (null rates, distributions) with alerts.
+    detect:
+      - Null-rate alerts per field.
+    tradeoff: >-
+      Contracts need cross-team agreement.
+    variant: >-
+      FinTech: a core-banking extract renames a balance field, and the assistant shows
+      zero balances.
+    line: Data you depend on needs a contract.
+    related: [cicd-18, data-11]
+    diagram:
+      bad_label: "Anti-pattern: no contract with the upstream export"
+      good_label: "Fix: data contract, schema validation, quality alerts"
+      bad: [["Field renamed", "CRM export"], ["Pipeline", "Fills blanks"], ["No plan", "In context"], ["2 weeks", "Generic help"]]
+      good: [["Contract", "Schema + owner"], ["Producer CI", "Tests it"], ["Validate", "Fail loudly"], ["Null alerts", "Per field"]]
+
+  - id: data-02
+    title: OCR misreads income documents with no confidence check
+    domain: fintech
+    severity: high
+    tags: [ocr, confidence, data quality]
+    scenario: >-
+      A mortgage lender's pipeline OCRs payslips and bank statements for an underwriting
+      assistant. Low-quality phone photos produce digit errors (8 read as 3). The pipeline
+      passes all text on, and the assistant summarises incomes that are off by thousands.
+    analogy: >-
+      Copying numbers from a smudged fax without saying it was smudged.
+    breaks:
+      - OCR confidence is ignored.
+      - No validation against document totals.
+      - Low-quality inputs flow downstream silently.
+    root_cause: >-
+      No quality gates on extracted data.
+    where: Document ingestion.
+    fix:
+      - Capture OCR confidence per field and route low-confidence fields to human verification or re-upload requests.
+      - Cross-check totals (gross minus deductions equals net) and year-to-date figures.
+      - Mark extracted values with confidence in downstream context.
+    detect:
+      - Share of low-confidence fields; underwriting corrections.
+    tradeoff: >-
+      More manual verification for bad images.
+    variant: >-
+      Telco: OCR on ID documents for postpaid sign-up misreads dates of birth.
+    line: Extracted data needs a confidence score and a cross-check.
+    related: [rag-09, prm-15]
+    diagram:
+      bad_label: "Anti-pattern: pass all OCR text downstream"
+      good_label: "Fix: confidence gates and arithmetic cross-checks"
+      bad: [["Phone photo", "Payslip"], ["OCR errors", "8 as 3"], ["Passed on", "No checks"], ["Wrong income", "Summarised"]]
+      good: [["Confidence", "Per field"], ["Cross-check", "Totals"], ["Low score", "Human verify"], ["Mark", "Confidence"]]
+
+  - id: data-03
+    title: No freshness SLO for promotion pages
+    domain: telco
+    severity: high
+    tags: [freshness, slo, knowledge pipeline]
+    scenario: >-
+      A carrier's marketing team updates promotion pages daily. The knowledge pipeline
+      crawls the website weekly. The bot regularly quotes expired promotions, and store staff
+      have to honour or explain them.
+    analogy: >-
+      A newspaper delivered once a week for a market that changes daily.
+    breaks:
+      - Update frequency of sources isn't matched by the pipeline.
+      - No freshness targets per source.
+      - Expired content isn't removed promptly.
+    root_cause: >-
+      No freshness SLOs.
+    where: Knowledge pipeline.
+    fix:
+      - Set freshness SLOs per source based on change frequency and risk (promotions within hours).
+      - Use CMS events to update, and expiry dates on promotional content that the index enforces.
+      - Monitor lag per source.
+    detect:
+      - Lag between source publish and index update.
+    tradeoff: >-
+      Event-driven ingestion is more complex.
+    variant: >-
+      FinTech: a bank's rate pages update instantly but the assistant's index refreshes
+      weekly (see rag-05).
+    line: Every source needs a freshness target.
+    related: [rag-05, cicd-11]
+    diagram:
+      bad_label: "Anti-pattern: weekly crawl for daily-changing content"
+      good_label: "Fix: freshness SLO per source, events, expiry dates"
+      bad: [["Promos", "Daily changes"], ["Crawl", "Weekly"], ["Expired promos", "Quoted"], ["Stores", "Honour them"]]
+      good: [["SLO", "Hours for promos"], ["CMS events", "Update"], ["Expiry", "Enforced"], ["Lag", "Monitored"]]
+
+  - id: data-04
+    title: After a bank merger, customer ids collide across systems
+    domain: fintech
+    severity: critical
+    tags: [master data, entity resolution, mergers]
+    scenario: >-
+      After a merger, a bank's assistant combines data from both banks' systems. Customer
+      ids overlap, and the integration layer joins on id alone. Some customers see
+      another person's accounts in the assistant's summary.
+    analogy: >-
+      Two schools merging and seating students by roll number, so two different "number
+      14"s share a desk.
+    breaks:
+      - Identifiers aren't globally unique across sources.
+      - No master data management or entity resolution.
+      - Joins aren't validated.
+    root_cause: >-
+      Missing master data management.
+    where: Data integration.
+    fix:
+      - Use a master customer index with globally unique ids and source-system mappings.
+      - Validate joins (name, date of birth, address) and quarantine conflicts.
+      - Test data integration with known collision cases before exposing it to AI.
+    detect:
+      - Join conflict rates; customer reports of unknown accounts.
+    tradeoff: >-
+      MDM is a substantial programme.
+    variant: >-
+      Telco: after acquiring a regional carrier, account numbers overlap and the bot shows
+      the wrong bills.
+    line: Join on identity you can trust, not on ids that happen to match.
+    related: [rag-13, ctx-17]
+    diagram:
+      bad_label: "Anti-pattern: join merged systems on overlapping ids"
+      good_label: "Fix: master customer index and validated joins"
+      bad: [["Two banks", "Merged"], ["Same ids", "Different people"], ["Join on id", "Only"], ["Wrong accounts", "Shown"]]
+      good: [["Master index", "Global ids"], ["Mappings", "Per source"], ["Validate", "Name, DOB"], ["Quarantine", "Conflicts"]]
+
+  - id: data-05
+    title: Can't tell which version of a document produced an answer
+    domain: telco
+    severity: medium
+    tags: [lineage, versioning]
+    scenario: >-
+      A customer disputes a bot answer about device trade-in terms from last month. The
+      knowledge base article has since been edited twice. The vector store keeps only the
+      latest chunks with no version info, so the carrier can't show what the bot actually
+      relied on.
+    analogy: >-
+      A contract where pages get replaced and no one keeps the old ones.
+    breaks:
+      - Chunks have no document version.
+      - Old versions aren't retained.
+      - Traces store chunk ids without versions.
+    root_cause: >-
+      No lineage from answer to source version.
+    where: Ingestion and tracing.
+    fix:
+      - Store document id, version and content hash on every chunk, and record them in traces.
+      - Retain historical versions in the content store (not necessarily in the live index).
+      - Make "what did the bot rely on" a supported query for complaints teams.
+    detect:
+      - Traces with complete source versions.
+    tradeoff: >-
+      Storage for history.
+    variant: >-
+      FinTech: a bank can't prove which fee schedule version its assistant quoted.
+    line: Every answer should point to a version, not just a document.
+    related: [ops-01, rag-15]
+    diagram:
+      bad_label: "Anti-pattern: chunks without versions"
+      good_label: "Fix: version and hash on chunks and traces, history kept"
+      bad: [["Dispute", "Trade-in terms"], ["Article", "Edited twice"], ["Latest only", "No version"], ["Can't show", "What was used"]]
+      good: [["Version + hash", "On chunks"], ["Traces", "Record version"], ["History", "Content store"], ["Lookup", "For complaints"]]
+
+  - id: data-06
+    title: Intent labels from three vendors disagree
+    domain: telco
+    severity: medium
+    tags: [labeling, guidelines, agreement]
+    scenario: >-
+      A carrier outsources intent labelling to three vendors. Each interprets "billing
+      dispute" versus "billing question" differently. The trained router is inconsistent,
+      and evals built on the labels can't be trusted.
+    analogy: >-
+      Three referees using slightly different rulebooks.
+    breaks:
+      - No shared labelling guidelines.
+      - Inter-annotator agreement not measured.
+      - Label quality not audited.
+    root_cause: >-
+      Uncontrolled labelling process.
+    where: Labelling operations.
+    fix:
+      - Write guidelines with definitions, edge cases and examples, owned by the business.
+      - Measure inter-annotator agreement and calibrate vendors with gold-standard items.
+      - Audit samples continuously and re-label disputed classes.
+    detect:
+      - Agreement scores per class and vendor.
+    tradeoff: >-
+      Guidelines and audits cost time.
+    variant: >-
+      FinTech: complaint-category labels differ between internal teams, confusing the
+      classifier.
+    line: Labels need a rulebook and a referee.
+    related: [eval-16, ft-03]
+    diagram:
+      bad_label: "Anti-pattern: labels without shared guidelines"
+      good_label: "Fix: guidelines, agreement checks, gold items, audits"
+      bad: [["3 vendors", "Labelling"], ["Own rules", "Each"], ["Disagree", "Dispute vs Q"], ["Bad router", "Bad evals"]]
+      good: [["Guidelines", "Edge cases"], ["Gold items", "Calibrate"], ["Agreement", "Measured"], ["Audits", "Continuous"]]
+
+  - id: data-07
+    title: HR and legal files indexed into the employee assistant
+    domain: fintech
+    severity: critical
+    tags: [data classification, indexing scope]
+    scenario: >-
+      A bank's internal assistant indexes "all SharePoint sites" to help employees. The
+      crawl includes HR investigations, salary reviews and legal privileged documents,
+      which become searchable by anyone who asks the right question.
+    analogy: >-
+      Moving every filing cabinet into the open-plan office because people need documents.
+    breaks:
+      - Indexing scope defined by location, not classification.
+      - Sensitive documents lack labels.
+      - Permissions not carried into the index.
+    root_cause: >-
+      No data classification gate for AI ingestion.
+    where: Ingestion scope and governance.
+    fix:
+      - Ingest only sources approved for the use case, with classification labels on documents.
+      - Exclude restricted classifications by default, and carry permissions into retrieval (see rag-06).
+      - Review sources with data owners before indexing.
+    detect:
+      - Classification audits of indexed content.
+    tradeoff: >-
+      Smaller corpus.
+    variant: >-
+      Telco: an employee assistant indexes network security designs and lawful-intercept
+      procedures.
+    line: Index by permission and classification, not by location.
+    related: [rag-06, sec-06]
+    diagram:
+      bad_label: "Anti-pattern: index everything the crawler can reach"
+      good_label: "Fix: approved sources, classification, permission-aware retrieval"
+      bad: [["All sites", "Crawled"], ["HR, legal", "Included"], ["Searchable", "By anyone"], ["Exposure", "Privileged"]]
+      good: [["Approved", "Sources only"], ["Labels", "Classification"], ["Exclude", "Restricted"], ["Owner review", "Before index"]]
+
+  - id: data-08
+    title: Usage events arrive late and the bill-shock alert is wrong
+    domain: telco
+    severity: medium
+    tags: [streaming, event time, late data]
+    scenario: >-
+      A carrier's agent sends proactive alerts when roaming usage passes thresholds.
+      Roaming usage records (TAP files from partner networks) arrive hours or days late.
+      The agent tells customers they've used 200 MB when they've already used 2 GB, and they
+      keep using data.
+    analogy: >-
+      A fuel gauge that updates a day after you've driven.
+    breaks:
+      - Event time and processing time are confused.
+      - Late data isn't accounted for.
+      - Alerts present stale data as current.
+    root_cause: >-
+      Pipeline ignores data latency and completeness.
+    where: Streaming design and messaging.
+    fix:
+      - Track event time, arrival time and completeness per source; show "as of" times.
+      - Adjust messaging for known delays ("roaming usage can take up to 48 hours to appear").
+      - Use real-time sources (online charging) for thresholds where available.
+    detect:
+      - Lag distributions per source.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: card transactions post late and the spending assistant tells customers they
+      are under budget.
+    line: Show when the data is from, not just what it says.
+    related: [rag-01, data-03]
+    diagram:
+      bad_label: "Anti-pattern: late data presented as current"
+      good_label: "Fix: event time, 'as of', real-time sources"
+      bad: [["Roaming", "TAP files"], ["Arrive late", "Hours/days"], ["'200 MB'", "Alert"], ["Really 2 GB", "Bill shock"]]
+      good: [["Event time", "Tracked"], ["'As of'", "Shown"], ["Delay notice", "Messaging"], ["Real-time", "OCS source"]]
+
+  - id: data-09
+    title: Backfill job duplicates every chunk in the vector store
+    domain: fintech
+    severity: medium
+    tags: [idempotent pipelines, backfills]
+    scenario: >-
+      A bank re-runs its document ingestion to backfill missing metadata. The job inserts
+      new chunks instead of updating existing ones. Every document now appears twice, and
+      retrieval returns duplicates that crowd out other results.
+    analogy: >-
+      Re-shelving books without checking whether they're already on the shelf.
+    breaks:
+      - Ingestion isn't idempotent.
+      - Chunk ids aren't deterministic.
+      - No duplicate checks after jobs.
+    root_cause: >-
+      Non-idempotent pipelines.
+    where: Ingestion design.
+    fix:
+      - Use deterministic chunk ids (document id, version, chunk index) and upsert.
+      - Make backfills idempotent and run them against a new index version when risky.
+      - Check counts and duplicates after every job.
+    detect:
+      - Duplicate rate and chunk count per document.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      Telco: a re-index of device manuals doubles chunks and halves retrieval diversity.
+    line: Every pipeline run should be safe to repeat.
+    related: [rag-13, ops-18]
+    diagram:
+      bad_label: "Anti-pattern: re-run inserts duplicates"
+      good_label: "Fix: deterministic ids, upserts, post-job checks"
+      bad: [["Backfill", "Re-run"], ["Insert", "Not upsert"], ["2x chunks", "Every doc"], ["Duplicates", "In results"]]
+      good: [["Stable ids", "Doc+ver+idx"], ["Upsert", "Idempotent"], ["Count check", "After job"], ["New version", "If risky"]]
+
+  - id: data-10
+    title: Production call records copied unmasked into dev
+    domain: telco
+    severity: critical
+    tags: [test data, masking, privacy]
+    scenario: >-
+      To make agent testing realistic, engineers copy a month of production call-detail
+      records and customer profiles into the development environment. Dev has weaker access
+      controls, and contractors can query the data. A privacy audit flags a CPNI breach.
+    analogy: >-
+      Taking real patient files home to practise filling in forms.
+    breaks:
+      - Production data in non-production environments.
+      - No masking or synthetic alternatives.
+      - Weaker controls in dev.
+    root_cause: >-
+      No test-data management.
+    where: Environments and data management.
+    fix:
+      - Use masked, tokenised or synthetic data in non-production, generated by an approved pipeline.
+      - Preserve realistic distributions and edge cases in synthetic data.
+      - Block production data copies to lower environments technically.
+    detect:
+      - Scans for production identifiers in dev.
+    tradeoff: >-
+      Synthetic data may miss rare real patterns; seed it carefully.
+    variant: >-
+      FinTech: a bank copies real transaction data into a test vector store for an AI
+      prototype.
+    line: Realistic test data doesn't mean real customer data.
+    related: [cicd-08, aev-04]
+    diagram:
+      bad_label: "Anti-pattern: production data copied into dev"
+      good_label: "Fix: masked or synthetic test data, copies blocked"
+      bad: [["Prod CDRs", "A month"], ["Copied", "To dev"], ["Contractors", "Can query"], ["CPNI breach", "Audit"]]
+      good: [["Masked", "Tokenised"], ["Synthetic", "Realistic"], ["Block copies", "Technical"], ["Scan dev", "Identifiers"]]
+
+  - id: data-11
+    title: Null APR in the rates table becomes a 0% quote
+    domain: fintech
+    severity: critical
+    tags: [data quality, nulls, tool data]
+    scenario: >-
+      A bank's rates table, used by the assistant's pricing tool, has a null APR for a new
+      credit-card product after a botched load. The tool returns null, the template renders
+      0.00%, and the assistant tells customers the card has 0% APR.
+    analogy: >-
+      A price tag that fell off, so the till rings up zero.
+    breaks:
+      - No quality checks on reference data.
+      - Nulls coerced to zero.
+      - The tool doesn't reject incomplete records.
+    root_cause: >-
+      Missing data-quality validation on data behind tools.
+    where: Data pipeline and tool validation.
+    fix:
+      - Validate reference data on load (required fields, ranges, allowed values) and block publication if checks fail.
+      - Treat nulls as errors in tools, never as zero.
+      - Reconcile rates against the product system of record.
+    detect:
+      - Data-quality checks with alerts on failure.
+    tradeoff: >-
+      Failed checks delay product launches until fixed.
+    variant: >-
+      Telco: a missing price in the catalog feed shows a new phone plan as $0.
+    line: Missing is not zero.
+    related: [tool-14, data-01]
+    diagram:
+      bad_label: "Anti-pattern: nulls flow through as zeros"
+      good_label: "Fix: quality checks on load, nulls as errors"
+      bad: [["Bad load", "Rates table"], ["APR null", "New card"], ["Renders 0.00%", "Template"], ["'0% APR'", "Told customers"]]
+      good: [["Validate", "On load"], ["Block", "If checks fail"], ["Null = error", "In tool"], ["Reconcile", "With system"]]
+
+  - id: data-12
+    title: Agents compute active subscribers three different ways
+    domain: telco
+    severity: medium
+    tags: [semantic layer, metric definitions]
+    scenario: >-
+      A carrier gives analytics agents SQL access to its warehouse. Asked "How many active
+      subscribers do we have in Texas?", three agents return three numbers, because each
+      defines "active" differently (any usage in 30 days, billing status, or not
+      suspended). Executives lose trust in the AI answers.
+    analogy: >-
+      Three accountants each using their own definition of revenue.
+    breaks:
+      - No shared metric definitions.
+      - Agents write their own SQL.
+      - Results aren't reconcilable.
+    root_cause: >-
+      No semantic layer for agents.
+    where: Data architecture.
+    fix:
+      - Provide a semantic layer or metrics store with certified definitions (active subscriber, ARPU, churn).
+      - Agents query metrics through it, not raw tables.
+      - Show the definition with every answer.
+    detect:
+      - Divergent answers for the same metric question.
+    tradeoff: >-
+      Semantic layers need governance and upkeep.
+    variant: >-
+      FinTech: agents compute "net new deposits" differently from finance's official
+      figure.
+    line: Agents should use the same metric definitions as finance.
+    related: [rag-12, tool-01]
+    diagram:
+      bad_label: "Anti-pattern: agents define metrics in their own SQL"
+      good_label: "Fix: certified metrics via a semantic layer"
+      bad: [["'Active subs?'", "Texas"], ["3 agents", "3 queries"], ["3 numbers", "3 definitions"], ["Trust lost", "Executives"]]
+      good: [["Semantic layer", "Certified"], ["Definitions", "Shared"], ["Query metrics", "Not tables"], ["Show definition", "In answer"]]
+
+  - id: data-13
+    title: CMS overwrites documents with no version history
+    domain: fintech
+    severity: medium
+    tags: [document versioning, content management]
+    scenario: >-
+      A bank's policy team edits documents in place in a file share. When the assistant's
+      answer about a lending policy is challenged, nobody can produce the version that was
+      in force on the date of the answer.
+    analogy: >-
+      A rulebook rewritten with an eraser.
+    breaks:
+      - Source content has no versioning.
+      - Effective dates aren't recorded.
+      - History can't be reconstructed.
+    root_cause: >-
+      Source content management without versioning.
+    where: Content governance.
+    fix:
+      - Manage policies in a system with version history, approval workflow and effective dates.
+      - Ingest versions with their effective dates.
+      - Keep superseded versions for audit.
+    detect:
+      - Share of indexed documents with version metadata.
+    tradeoff: >-
+      Migration to a proper content system.
+    variant: >-
+      Telco: care knowledge articles are overwritten, and the carrier can't show which
+      roaming policy applied in a dispute.
+    line: If the source isn't versioned, your answers can't be defended.
+    related: [data-05, rag-14]
+    diagram:
+      bad_label: "Anti-pattern: policies edited in place"
+      good_label: "Fix: versioned content with effective dates"
+      bad: [["File share", "Edit in place"], ["Answer", "Challenged"], ["Old version", "Gone"], ["Can't defend", "Policy"]]
+      good: [["Versioned", "Content system"], ["Effective dates", "Recorded"], ["Approvals", "Workflow"], ["History", "Retained"]]
+
+  - id: data-14
+    title: Ingestion copies EU customer data into a US vector database
+    domain: telco
+    severity: high
+    tags: [data residency, pipelines]
+    scenario: >-
+      A multinational carrier builds one global vector database for its care assistant in
+      a US region. The ingestion pipeline copies EU customers' support tickets into it,
+      creating an unassessed international transfer.
+    analogy: >-
+      Shipping the European office's files to a US warehouse because it was easier.
+    breaks:
+      - Pipelines ignore data residency.
+      - One global store for convenience.
+      - No transfer assessment.
+    root_cause: >-
+      Residency not designed into AI data pipelines.
+    where: Data architecture.
+    fix:
+      - Partition stores by region and route data by customer residency.
+      - Keep non-personal knowledge global and personal data regional.
+      - Review cross-border flows with privacy before build.
+    detect:
+      - Region checks on stored records.
+    tradeoff: >-
+      More infrastructure to run.
+    variant: >-
+      FinTech: a bank's global document index stores customer files outside required
+      jurisdictions.
+    line: Personal data stays where it's allowed to live, embeddings included.
+    related: [sec-06, sec-16]
+    diagram:
+      bad_label: "Anti-pattern: one global vector store for personal data"
+      good_label: "Fix: regional stores, routed by residency"
+      bad: [["EU tickets", "Ingested"], ["US region", "Vector DB"], ["Transfer", "Unassessed"], ["Privacy risk", "Flagged"]]
+      good: [["Regional", "Stores"], ["Route", "By residency"], ["Global", "Non-personal"], ["Review", "Before build"]]
+
+  - id: data-15
+    title: SharePoint permission changes take a week to reach the index
+    domain: fintech
+    severity: high
+    tags: [permission sync, access control]
+    scenario: >-
+      A bank removes a departing team's access to a deal folder. The assistant's index
+      syncs permissions weekly, so for a week, former team members can still ask the
+      assistant about the confidential deal.
+    analogy: >-
+      Changing the locks but letting the old keys work for another week.
+    breaks:
+      - Content and permissions sync on different schedules.
+      - Permission changes aren't event-driven.
+      - Confidential data exposed during the lag.
+    root_cause: >-
+      Permission sync lag.
+    where: Ingestion and access control.
+    fix:
+      - Sync permission changes on events (near real time), separately from content.
+      - Check source permissions at query time for sensitive collections.
+      - Monitor permission sync lag.
+    detect:
+      - Lag between permission change and index update.
+    tradeoff: >-
+      Query-time checks add latency.
+    variant: >-
+      Telco: an employee moved off an enterprise account can still query its contracts via
+      the assistant for days.
+    line: Revoked access must be revoked everywhere, fast.
+    related: [rag-06, data-07]
+    diagram:
+      bad_label: "Anti-pattern: weekly permission sync"
+      good_label: "Fix: event-driven permission sync, query-time checks"
+      bad: [["Access removed", "Deal folder"], ["Index sync", "Weekly"], ["Still queryable", "A week"], ["Exposure", "Confidential"]]
+      good: [["Events", "Permission changes"], ["Sync fast", "Separately"], ["Query-time", "Sensitive"], ["Lag metric", "Monitored"]]
+
+  - id: data-16
+    title: Chunks without product, region or date metadata
+    domain: telco
+    severity: medium
+    tags: [metadata, filtering]
+    scenario: >-
+      A carrier operates in several countries with different plans. Its knowledge chunks
+      carry no country, brand or effective-date metadata, so questions from Mexican
+      customers retrieve US plan details, and the bot can't filter.
+    analogy: >-
+      A shop that mixes stock for different countries on the same shelf without labels.
+    breaks:
+      - Ingestion drops metadata available in the source.
+      - Retrieval can't filter by context.
+      - Wrong-market answers.
+    root_cause: >-
+      Metadata not treated as a first-class part of ingestion.
+    where: Ingestion pipeline.
+    fix:
+      - Define a required metadata schema (market, brand, product, segment, effective dates, channel, language).
+      - Populate it from the source system and validate at ingestion.
+      - Filter retrieval by the customer's context.
+    detect:
+      - Chunks missing required metadata; wrong-market answers.
+    tradeoff: >-
+      Upfront schema work.
+    variant: >-
+      FinTech: a bank's content lacks jurisdiction metadata and the assistant gives
+      UK rules to US customers.
+    line: Metadata is what lets retrieval ask "which one?"
+    related: [rag-01, rag-11]
+    diagram:
+      bad_label: "Anti-pattern: chunks without market metadata"
+      good_label: "Fix: required metadata schema, validated, used in filters"
+      bad: [["Many markets", "Plans differ"], ["No metadata", "On chunks"], ["Mexico Q", "US answer"], ["Can't filter", "Retrieval"]]
+      good: [["Schema", "Market, brand"], ["From source", "Populated"], ["Validate", "At ingest"], ["Filter", "By customer"]]
+
+  - id: data-17
+    title: Scraped competitor rates ingested without validation
+    domain: fintech
+    severity: medium
+    tags: [external data, validation, provenance]
+    scenario: >-
+      A bank's product team scrapes competitors' savings rates into the assistant's
+      knowledge so advisers can compare. A scraper bug picks up a promotional
+      "up to 12%" headline as a standard rate, and advisers quote it to clients in
+      comparisons.
+    analogy: >-
+      Pinning newspaper ads to the notice board as official information.
+    breaks:
+      - External data enters without validation.
+      - Provenance and dates aren't shown.
+      - Advisers treat it as authoritative.
+    root_cause: >-
+      Untrusted external data treated like internal data.
+    where: Ingestion governance.
+    fix:
+      - Validate external data (ranges, anomaly checks, human review for outliers).
+      - Label it as external with source and date in every answer.
+      - Keep it separate from authoritative internal content.
+    detect:
+      - Anomaly alerts on external data.
+    tradeoff: >-
+      Review effort.
+    variant: >-
+      Telco: scraped competitor plan prices are wrong and the retention bot quotes them.
+    line: External data needs a label and a sanity check.
+    related: [sec-02, ctx-14]
+    diagram:
+      bad_label: "Anti-pattern: external data ingested as authoritative"
+      good_label: "Fix: validate, label source and date, keep separate"
+      bad: [["Scraper", "Competitor rates"], ["Bug", "'Up to 12%'"], ["Ingested", "Unchecked"], ["Quoted", "To clients"]]
+      good: [["Validate", "Ranges"], ["Outliers", "Human review"], ["Label", "Source + date"], ["Separate", "From internal"]]
+
+  - id: data-18
+    title: Ingestion job failing silently for three weeks
+    domain: telco
+    severity: high
+    tags: [pipeline monitoring, alerting]
+    scenario: >-
+      A carrier's nightly ingestion of device-support content fails after a credential
+      expires. The job logs an error but nobody is alerted. For three weeks, new device
+      launches have no knowledge content, and the bot can't help with them.
+    analogy: >-
+      A delivery van that broke down and nobody noticed the shelves emptying.
+    breaks:
+      - Pipeline failures don't alert.
+      - Credentials expire without monitoring.
+      - Freshness isn't checked from the consumer side.
+    root_cause: >-
+      Unmonitored data pipelines.
+    where: Data operations.
+    fix:
+      - Alert on job failures and on missing successful runs (dead man's switch).
+      - Monitor credential expiry.
+      - Check freshness and volume from the index side.
+    detect:
+      - Time since last successful run per source.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: a bank's policy ingestion stops for a month after a SharePoint API change.
+    line: A pipeline that can fail silently will.
+    related: [data-03, obs-09]
+    diagram:
+      bad_label: "Anti-pattern: pipeline failures only in logs"
+      good_label: "Fix: failure and missing-run alerts, credential monitoring"
+      bad: [["Credential", "Expired"], ["Job fails", "Logged only"], ["3 weeks", "No alert"], ["New devices", "No content"]]
+      good: [["Failure alert", "Immediate"], ["Dead-man switch", "Missing runs"], ["Cred expiry", "Monitored"], ["Freshness", "Index side"]]
+
+  - id: data-19
+    title: Deletion job removes AI logs under legal hold
+    domain: fintech
+    severity: high
+    tags: [legal hold, retention, deletion]
+    scenario: >-
+      A bank's privacy-driven deletion job removes assistant conversations after 90 days.
+      Some conversations relate to a customer lawsuit and are under legal hold. The job
+      deletes them anyway, creating a spoliation risk.
+    analogy: >-
+      Shredding files the court asked you to keep.
+    breaks:
+      - Deletion jobs don't check legal holds.
+      - AI data isn't integrated with records management.
+      - Retention and preservation conflict without rules.
+    root_cause: >-
+      AI data outside records management.
+    where: Data governance.
+    fix:
+      - Integrate AI conversation stores with records management and legal-hold systems.
+      - Check holds before deletion.
+      - Document retention schedules for AI data.
+    detect:
+      - Deletions of records under hold (should be zero).
+    tradeoff: >-
+      None significant.
+    variant: >-
+      Telco: a carrier deletes chatbot logs needed for a regulatory investigation.
+    line: Retention must respect holds, not just deadlines.
+    related: [tel-09, gov-07]
+    diagram:
+      bad_label: "Anti-pattern: deletion ignores legal holds"
+      good_label: "Fix: records management and hold checks before deletion"
+      bad: [["90-day delete", "Job"], ["Lawsuit", "Legal hold"], ["Deleted anyway", "Conversations"], ["Spoliation", "Risk"]]
+      good: [["Records mgmt", "Integrated"], ["Hold check", "Before delete"], ["Schedule", "Documented"], ["Audit", "Zero violations"]]
+
+  - id: data-20
+    title: Knowledge articles with no owner go stale
+    domain: telco
+    severity: medium
+    tags: [content stewardship, ownership]
+    scenario: >-
+      A carrier's knowledge base has 18,000 articles. A third have no owner because teams
+      reorganised. Outdated articles about retired plans and old router models keep being
+      retrieved, and nobody is responsible for fixing them.
+    analogy: >-
+      A garden with no gardener.
+    breaks:
+      - No stewardship model for content.
+      - No review cycles or expiry.
+      - Bot quality depends on unowned content.
+    root_cause: >-
+      Content governance missing.
+    where: Knowledge management.
+    fix:
+      - Assign an owner to every article (by product area), with review dates.
+      - Auto-flag articles past review date and reduce their ranking until reviewed.
+      - Use bot failure data to prioritise content fixes.
+    detect:
+      - Share of articles without owner or past review date.
+    tradeoff: >-
+      Content teams need capacity.
+    variant: >-
+      FinTech: a bank's policy library has hundreds of documents whose owners have left.
+    line: Every piece of knowledge needs a gardener.
+    related: [ops-12, data-13]
+    diagram:
+      bad_label: "Anti-pattern: unowned knowledge content"
+      good_label: "Fix: owners, review dates, ranking penalties"
+      bad: [["18k articles", "Knowledge"], ["1/3 no owner", "Reorg"], ["Stale content", "Retrieved"], ["No one fixes", "Bot quality"]]
+      good: [["Owner", "Per article"], ["Review date", "Scheduled"], ["Overdue", "Down-ranked"], ["Prioritise", "From failures"]]

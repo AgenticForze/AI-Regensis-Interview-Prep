@@ -1,0 +1,29 @@
+title: AML alert triage agent
+domain: fintech
+summary: Agent that investigates transaction-monitoring alerts and closes or escalates them.
+scenario: >-
+  A bank's AML agent investigates transaction-monitoring alerts. It retrieves prior case
+  notes and customer due-diligence files from a shared index, keeps notes in a shared
+  memory, and closes low-risk alerts or escalates others to investigators.
+lanes:
+  - name: Inputs
+    nodes:
+      - {id: alerts, title: TM alerts, sub: Monitoring system, type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: Triage agent, sub: Close or escalate, type: agent, attrs: {makes_regulated_decision: true}}
+      - {id: memory, title: Case memory, sub: Shared notes, type: memory}
+  - name: Knowledge and tools
+    nodes:
+      - {id: cases, title: Case search, sub: Notes + CDD files, type: retriever}
+      - {id: txns, title: Transactions, sub: Account history, type: tool_read}
+      - {id: close, title: Close alert, sub: Case system, type: tool_write, attrs: {idempotent: true}}
+  - name: Systems of record
+    nodes:
+      - {id: cms, title: Case management, sub: Alerts + SARs, type: system_of_record}
+edges:
+  - {from: alerts, to: agent}
+  - {from: agent, to: memory, two_way: true}
+  - {from: close, to: cms}
+bus: {from: agent, to: [cases, txns, close]}

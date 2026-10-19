@@ -1,0 +1,444 @@
+# Failure-point rules used by Architecture Review.
+#
+# A rule fires on an architecture spec (content/architectures/*.yaml) when:
+#   when.node     -> per node whose `type` is in the list and whose attrs match.
+#                    `attrs` must match exactly (missing attr = null);
+#                    `not` attrs must NOT match (so missing attr counts as "not set").
+#   when.missing  -> once, when no node has one of the listed types, and at least one
+#                    node matches `requires` (if given).
+# scope: component -> numbered red marker on the node (missing-rules mark `marker_on`)
+#        platform  -> listed as P1, P2... and added to a "Platform controls" lane
+# patch describes the fixed architecture: `set` changes the matched node, `add_node`
+# adds a control (deduplicated by id), `add_edge` connects it ($agent = first agent node,
+# $node = matched node).
+#
+# Node types: channel, agent, router, retriever, knowledge, vector_store, tool_read,
+# tool_write, tool_payment, tool_provision, tool_identity, tool_fraud, tool_notify,
+# tool_code, system_of_record, policy, human_approval, guardrail, memory, cache,
+# gateway, observability, eval, audit, queue, external_agent, spacer.
+
+rules:
+  - id: R01
+    title: Security and business policy enforced only by the prompt
+    severity: critical
+    scope: component
+    when:
+      missing: [policy]
+      requires: {type: [tool_write, tool_payment, tool_provision]}
+    marker_on: agent
+    why: >-
+      Rules written as prompt instructions are suggestions. A persuasive customer, an
+      injected document or a model update can talk the agent past them.
+    fix:
+      - Move authorisation and limits into a deterministic policy engine (OPA, or rules in the order or payment layer).
+      - The agent may request an action; only the policy engine can authorise it.
+      - Keep the prompt for explaining decisions, not making security decisions.
+    detect: Red-team suite of social-engineering scripts; unauthorised actions reaching write tools must be zero.
+    owner: Platform / security
+    scenarios: [prm-16, agf-05, sec-10]
+    patch:
+      add_node: {lane: "$agent_lane", after: "$agent", id: policy, title: Policy engine, sub: Authorizes actions, type: policy}
+      add_edge: {from: "$agent", to: policy, two_way: true}
+
+  - id: R02
+    title: Irreversible action runs with no human gate
+    severity: high
+    scope: component
+    when:
+      node: {type: [tool_write, tool_payment, tool_provision], attrs: {irreversible: true}, not: {approval: true}}
+    why: >-
+      The model can be wrong or manipulated, and this action can't be undone. Full
+      autonomy turns every mistake into customer harm.
+    fix:
+      - Tier actions by reversibility and risk; high-risk ones go to a human queue with the trace and evidence attached.
+      - Add a cooling-off window or soft-delete where the process allows it.
+      - Show approvers independent system facts, not just the agent's summary.
+    detect: Irreversible actions without an approval record (target zero); confirmed-error rate per risk tier.
+    owner: Operations / fraud
+    scenarios: [gov-02, sec-05, sec-19]
+    patch:
+      set: {attrs: {approval: true}}
+      add_node: {lane: Controls, id: human_approval, title: Human approval, sub: High-risk actions, type: human_approval, attrs: {sees_evidence: true}}
+
+  - id: R03
+    title: Side-effecting tool is not idempotent
+    severity: high
+    scope: component
+    when:
+      node: {type: [tool_write, tool_payment, tool_provision], not: {idempotent: true}}
+    why: >-
+      A timeout after the backend succeeded, followed by a retry, repeats the side effect:
+      two orders, two payments, two SIM profiles.
+    fix:
+      - Send an idempotency key derived from the business request on every write.
+      - Check the original request's status before any retry; never auto-retry writes.
+      - Run multi-step side effects in a durable workflow, not the LLM loop.
+    detect: Duplicate detection on business keys within a time window; reconciliation alerts.
+    owner: Owning system team
+    scenarios: [agf-06, tool-15, mas-08]
+    patch:
+      set: {sub: Idempotency key, attrs: {idempotent: true}}
+
+  - id: R04
+    title: Risk or safety check fails open
+    severity: critical
+    scope: component
+    when:
+      node: {type: [tool_fraud, guardrail], not: {fail_mode: closed}}
+    why: >-
+      When the check times out or errors, the agent treats "no answer" as "no risk" and
+      carries on. Attackers time their attempts for exactly those moments.
+    fix:
+      - Fail closed; an error or timeout means deny or route to a human.
+      - Return typed verdicts (ALLOW, REVIEW, DENY), never free text.
+      - Add a circuit breaker and test with injected timeouts.
+    detect: Actions completed while the check errored (target zero), enforced by fault-injection tests.
+    owner: Fraud / security engineering
+    scenarios: [agf-11, aev-05, sec-09]
+    patch:
+      set: {sub: Fails closed, attrs: {fail_mode: closed}}
+
+  - id: R05
+    title: Weak identity verification for a high-risk journey
+    severity: critical
+    scope: component
+    when:
+      node: {type: [tool_identity], attrs: {auth_strength: weak}}
+    why: >-
+      Knowledge-based questions, SMS codes to the line being changed, and voice alone are
+      all bypassed by breached data, SIM swaps or voice cloning.
+    fix:
+      - Use step-up authentication that doesn't depend on the channel at risk (passkey in a logged-in app, ID document with liveness, in-store check).
+      - Remove knowledge-based fallbacks for high-risk journeys.
+      - Treat voice biometrics as one risk signal, never as authentication.
+    detect: Share of high-risk actions per authentication method; spikes in fallback usage.
+    owner: Identity team
+    scenarios: [sec-12, sec-10, sec-05]
+    patch:
+      set: {title: Step-up auth, sub: "Passkey, ID doc", attrs: {auth_strength: strong}}
+
+  - id: R06
+    title: Confirmation goes only to a channel the attacker may control
+    severity: high
+    scope: component
+    when:
+      node: {type: [tool_notify], not: {notifies_existing_contacts: true}}
+    why: >-
+      If the only confirmation goes to the new SIM, new email or new device, the real
+      customer learns about the change after the damage is done.
+    fix:
+      - Notify existing, verified contacts (old line, email on file, app push) before the change takes effect.
+      - Publish the event to downstream partners that rely on it (for SIM swap, banks via the CAMARA SIM Swap API).
+      - Give the customer a one-tap "this wasn't me" path.
+    detect: Every high-risk change has a delivered notification to a pre-existing contact.
+    owner: Care / partnerships
+    scenarios: [sec-05, aev-16]
+    patch:
+      set: {sub: Old contacts first, attrs: {notifies_existing_contacts: true}}
+
+  - id: R07
+    title: Retrieval ignores document permissions
+    severity: critical
+    scope: component
+    when:
+      node: {type: [retriever], not: {acl_filter: true, public: true}}
+    why: >-
+      Retrieval doesn't know who's asking, so restricted documents reach the prompt and
+      the model summarises them for anyone.
+    fix:
+      - Carry document ACLs and classification into chunk metadata at ingestion.
+      - Filter retrieval by the caller's entitlements on every request.
+      - Keep restricted collections in separate indexes.
+    detect: Role-based red-team queries in CI; any restricted chunk retrieved fails the build.
+    owner: Platform / data
+    scenarios: [rag-06, data-07, data-15]
+    patch:
+      set: {sub: ACL-filtered, attrs: {acl_filter: true}}
+
+  - id: R08
+    title: Untrusted content enters the context unsanitised
+    severity: high
+    scope: component
+    when:
+      node: {type: [retriever, knowledge, channel, tool_read, external_agent], attrs: {untrusted_content: true}, not: {sanitized: true}}
+    why: >-
+      Uploads, emails, web pages and partner messages can carry instructions. The model
+      can't reliably tell data from commands.
+    fix:
+      - Sanitise at ingestion (strip hidden text, scripts, metadata).
+      - Wrap third-party content in delimiters and label it as data.
+      - Make sure the agent's permissions limit the damage if an injection succeeds.
+    detect: Injection test fixtures in CI; scanner for instruction-like phrases in inputs.
+    owner: Platform / security
+    scenarios: [rag-19, sec-02, ctx-04]
+    patch:
+      set: {sub: Sanitised input, attrs: {sanitized: true}}
+
+  - id: R09
+    title: Prices or balances retrieved from documents instead of the system of record
+    severity: high
+    scope: component
+    when:
+      node: {type: [retriever], attrs: {structured_facts: true}}
+    why: >-
+      Documents are copies of structured data. They go stale, get chunked badly, and
+      can't be cited to a record id.
+    fix:
+      - Route price, balance and eligibility questions to a tool backed by the system of record (TMF620 catalog, core banking, rating engine).
+      - Use retrieval only for explanations around the number.
+      - Reject any amount in the answer that isn't in a tool response.
+    detect: Numeric-faithfulness checks on 100% of answers containing amounts.
+    owner: Product / platform
+    scenarios: [rag-01, rag-05, ops-03]
+    patch:
+      set: {sub: Explanations only, attrs: {structured_facts: false}}
+      add_node: {lane: "$node_lane", id: facts_tool, title: Facts tool, sub: System of record, type: tool_read}
+      add_to_bus: facts_tool
+
+  - id: R10
+    title: Agent credentials broader than the user it serves
+    severity: high
+    scope: component
+    when:
+      node: {type: [tool_write, tool_payment, tool_provision, tool_read], attrs: {shared_admin_credentials: true}}
+    why: >-
+      Any mistake or injection inherits the full blast radius of an admin service account,
+      including other customers' accounts.
+    fix:
+      - Act with delegated, scoped tokens for the authenticated customer.
+      - Check object ownership inside every tool.
+      - Use narrow service identities per tool.
+    detect: Cross-account access attempts; periodic access reviews of agent identities.
+    owner: Identity / platform
+    scenarios: [agf-12, tool-07, sec-04]
+    patch:
+      set: {sub: Scoped token, attrs: {shared_admin_credentials: false}}
+
+  - id: R11
+    title: Generated code runs without a sandbox
+    severity: critical
+    scope: component
+    when:
+      node: {type: [tool_code], not: {sandboxed: true}}
+    why: >-
+      Model-written code steered by untrusted data can read secrets and send data out if
+      it runs with network access and credentials.
+    fix:
+      - Run code in an isolated sandbox with no network egress and limited resources.
+      - Mount minimised data read-only instead of passing credentials.
+      - Log every executed script.
+    detect: Egress attempts from sandboxes; code audit logs.
+    owner: Platform / security
+    scenarios: [sec-17, sec-18]
+    patch:
+      set: {sub: Sandboxed, attrs: {sandboxed: true}}
+
+  - id: R12
+    title: Memory without per-user isolation or expiry
+    severity: high
+    scope: component
+    when:
+      node: {type: [memory, cache], not: {user_scoped: true}}
+    why: >-
+      Memories or cached answers keyed without the user can surface one customer's data to
+      another, and stale facts outlive their truth.
+    fix:
+      - Key memory and caches by tenant and user; never cache personalised answers across users.
+      - Give memories a source, timestamp and expiry; systems of record win on conflict.
+      - Let customers view and delete what's remembered.
+    detect: Isolation tests in CI; audits of memory age and conflicts.
+    owner: Platform
+    scenarios: [ctx-17, mem-14, mem-06]
+    patch:
+      set: {sub: User-scoped, attrs: {user_scoped: true}}
+
+  - id: R13
+    title: Partner agent's messages trusted as instructions
+    severity: critical
+    scope: component
+    when:
+      node: {type: [external_agent], not: {verified: true}}
+    why: >-
+      Another company's agent is another company's input. Claims like "as agreed" must be
+      checked against your own records.
+    fix:
+      - Authenticate partner agents (mutual TLS, signed messages) and limit allowed message types.
+      - Extract claims and verify them against contracts and records.
+      - Require human approval for financial adjustments.
+    detect: Adjustments without supporting records.
+    owner: Partnerships / security
+    scenarios: [mas-12]
+    patch:
+      set: {sub: Verified claims, attrs: {verified: true}}
+
+  - id: R14
+    title: Human review step without evidence or capacity
+    severity: medium
+    scope: component
+    when:
+      node: {type: [human_approval], not: {sees_evidence: true}}
+    why: >-
+      Approvers who see only the agent's summary, at high volume, rubber-stamp. The control
+      exists on paper only.
+    fix:
+      - Show system facts independently of the summary (account age, recent changes, risk score, amount vs history).
+      - Flag anomalies deterministically and require a reason to approve flagged items.
+      - Plan capacity and SLAs for the queue.
+    detect: Approval time per item; approval rate of flagged items; queue age.
+    owner: Operations
+    scenarios: [sec-19, gov-15]
+    patch:
+      set: {sub: Evidence shown, attrs: {sees_evidence: true}}
+
+  - id: R15
+    title: Slow legacy system called without a timeout
+    severity: medium
+    scope: component
+    when:
+      node: {type: [tool_read, tool_write, tool_provision, system_of_record], attrs: {legacy: true}, not: {timeout: true}}
+    why: >-
+      Legacy OSS, mainframe or bureau calls can hang for minutes, freezing the conversation
+      and piling up load.
+    fix:
+      - Set a timeout per tool from its SLA and return a structured timeout error.
+      - Make slow operations asynchronous (job id plus status tool).
+      - Rate-limit and cache reads to protect the legacy system.
+    detect: Tool latency percentiles and timeout rates.
+    owner: Integration team
+    scenarios: [tool-08, tool-13, tool-12]
+    patch:
+      set: {sub: Timeout + async, attrs: {timeout: true}}
+
+  - id: R16
+    title: Agent loop has no step or cost budget
+    severity: medium
+    scope: component
+    when:
+      node: {type: [agent], not: {budget: true}}
+    why: >-
+      Without caps, one confused run can loop for hours, call tools thousands of times and
+      cost hundreds of dollars.
+    fix:
+      - Cap steps, tokens, time and dollars per run, and detect repeated tool calls.
+      - Return a partial result and escalate when a cap is hit.
+    detect: Alerts on steps, duration and cost outliers per run.
+    owner: Platform
+    scenarios: [agf-02, cost-07, obs-15]
+    patch:
+      set: {attrs: {budget: true}}
+
+  - id: R17
+    title: LLM makes a regulated decision
+    severity: critical
+    scope: component
+    when:
+      node: {type: [agent], attrs: {makes_regulated_decision: true}}
+    why: >-
+      Credit, AML dispositions and similar decisions need specific, consistent,
+      explainable reasons and validated models. Generated narratives can't supply them.
+    fix:
+      - Keep the decision in a validated, explainable model or rule set; the LLM gathers information and drafts explanations.
+      - Generate reasons from the decision model's factors.
+      - Route borderline cases to a human decision-maker.
+    detect: Mismatch between stated reasons and decision factors; model-risk validation status.
+    owner: Model risk / credit or compliance
+    scenarios: [gov-05, gov-01, prm-10]
+    patch:
+      set: {sub: Gathers + explains, attrs: {makes_regulated_decision: false}}
+      add_node: {lane: "$agent_lane", after: "$agent", id: decision_model, title: Decision model, sub: Validated rules, type: policy}
+      add_edge: {from: "$agent", to: decision_model, two_way: true}
+
+  - id: P01
+    title: No end-to-end tracing of agent decisions
+    severity: high
+    scope: platform
+    when:
+      missing: [observability]
+      requires: {type: [agent]}
+    why: >-
+      Without traces of what the model saw and which tools it called, incidents and
+      complaints can't be investigated or replayed.
+    fix:
+      - Trace every step with OpenTelemetry GenAI conventions (prompt version, retrieved ids, tool I/O, model version), with redaction.
+      - Attach the trace id to responses and feedback.
+    detect: Share of production answers with a complete trace.
+    owner: Platform
+    scenarios: [obs-02, obs-20, tel-01]
+    patch:
+      add_node: {lane: Platform controls, id: tracing, title: Tracing, sub: Every step, type: observability}
+
+  - id: P02
+    title: No audit trail for actions taken
+    severity: high
+    scope: platform
+    when:
+      missing: [audit]
+      requires: {type: [tool_write, tool_payment, tool_provision]}
+    why: >-
+      Regulators, complaints teams and incident responders need to know who asked, what the
+      agent decided and why, for every change it made.
+    fix:
+      - Keep an immutable audit log of every write action linked to the conversation, confirmation and policy decision.
+      - Retain it per records-management rules.
+    detect: Write actions without an audit record (target zero).
+    owner: Compliance / platform
+    scenarios: [obs-07, gov-07]
+    patch:
+      add_node: {lane: Controls, id: audit, title: Audit trail, sub: Every decision, type: audit}
+
+  - id: P03
+    title: No eval gate on changes
+    severity: high
+    scope: platform
+    when:
+      missing: [eval]
+      requires: {type: [agent]}
+    why: >-
+      Prompt, model, index and tool changes ship without anyone checking quality, safety or
+      cost regressions.
+    fix:
+      - Run fast evals on every pull request and full suites before release, with blocking thresholds.
+      - Include safety, policy and trajectory checks for agents.
+    detect: Releases without an eval record.
+    owner: AI engineering
+    scenarios: [cicd-01, eval-15, aev-02]
+    patch:
+      add_node: {lane: Platform controls, id: evals, title: Eval gate, sub: CI + canary, type: eval}
+
+  - id: P04
+    title: No LLM gateway, fallback or cost metering
+    severity: medium
+    scope: platform
+    when:
+      missing: [gateway]
+      requires: {type: [agent]}
+    why: >-
+      A single provider outage or rate limit takes the service down, and nobody sees cost
+      per tenant until the invoice.
+    fix:
+      - Route model calls through a gateway with retries, fallback models, quotas and cost metering.
+      - Provide a degraded non-LLM mode for top intents.
+    detect: Provider error rates, fallback activations and cost per tenant.
+    owner: Platform
+    scenarios: [agf-16, ops-07, obs-05]
+    patch:
+      add_node: {lane: Platform controls, id: gateway, title: LLM gateway, sub: "Fallback, quotas", type: gateway}
+
+  - id: P05
+    title: No input or output guardrails
+    severity: high
+    scope: platform
+    when:
+      missing: [guardrail]
+      requires: {type: [channel]}
+    why: >-
+      Jailbreaks, prompt injection and data leakage need layered checks on what goes in and
+      what comes out, independent of the model.
+    fix:
+      - Add input checks (injection, scope) and output checks (PII, policy claims, unsupported promises).
+      - Monitor block rates and false positives per rule.
+    detect: Red-team attack success rate; guardrail block-rate trends.
+    owner: Security / platform
+    scenarios: [sec-09, eval-10, obs-10]
+    patch:
+      add_node: {lane: Platform controls, id: guardrails, title: Guardrails, sub: Input + output, type: guardrail, attrs: {fail_mode: closed}}

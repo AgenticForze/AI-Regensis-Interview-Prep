@@ -1,0 +1,819 @@
+id: agent-frameworks
+order: 3
+prefix: agf
+title: Agent Frameworks
+summary: >-
+  The best production agent is often a workflow with one or two LLM decisions in it.
+  Give the model autonomy only where the path can't be known in advance, and keep money
+  movement, provisioning and security decisions in deterministic, idempotent,
+  permission-scoped code.
+scenarios:
+  - id: agf-01
+    title: Port-in processing built as a free-roaming agent
+    domain: telco
+    severity: high
+    tags: [workflow vs agent, number porting, reliability]
+    scenario: >-
+      A carrier builds a ReAct agent to process mobile number port-in requests: validate
+      the account number and PIN from the losing carrier, check the number is portable,
+      submit the port request, schedule activation and notify the customer. The steps
+      never change, yet the agent takes 9-14 LLM calls per request, sometimes skips the
+      portability check, and 1 in 10 ports fails or is delayed.
+    analogy: >-
+      Hiring a creative chef to run a vending machine. The job is the same every time, and
+      creativity only adds ways to get it wrong.
+    breaks:
+      - Every step is an LLM decision, so each one adds latency, cost and a chance of error.
+      - Errors compound; 95% reliability per step over 10 steps gives about 60% end-to-end success.
+      - The model sometimes reorders or skips steps that the process requires.
+    root_cause: >-
+      An autonomous loop was used for a fixed, well-understood business process.
+    where: Orchestration design.
+    fix:
+      - Model the port-in as a deterministic workflow (state machine or durable workflow engine) with explicit steps and retries.
+      - Use the LLM only where judgement is needed, such as interpreting a free-text rejection reason from the losing carrier or drafting the customer message.
+      - Validate each step's output in code before moving on.
+    detect:
+      - Step-completion and skip rates per run, and port success rate by version.
+    tradeoff: >-
+      Workflows are less flexible for unexpected cases; add an "exception" branch that
+      hands off to an agent or a human.
+    variant: >-
+      FinTech: account-opening checks (ID verification, sanctions screening, credit pull,
+      account creation) run as an agent and occasionally skip sanctions screening.
+    line: Autonomy is a cost, so spend it only where the path is unknown.
+    related: [agf-07, agf-13, mas-08]
+    diagram:
+      bad_label: "Anti-pattern: ReAct loop for a fixed port-in process"
+      good_label: "Fix: deterministic workflow, LLM only for judgement"
+      bad: [["Port-in request", "Fixed steps"], ["ReAct loop", "9-14 LLM calls"], ["Skips a check", "Portability"], ["1 in 10 fails", "Delayed ports"]]
+      good: [["Workflow", "State machine"], ["Coded checks", "Each step"], ["LLM step", "Parse rejection"], ["Exceptions", "To agent/human"]]
+
+  - id: agf-02
+    title: Reconciliation agent loops all night on one break
+    domain: fintech
+    severity: high
+    tags: [loop limits, budgets, circuit breaker]
+    scenario: >-
+      A payments company runs a reconciliation agent that investigates unmatched
+      transactions between the ledger and bank statements. One break involves a
+      transaction split across two settlement files. The agent keeps re-querying the same
+      files with slightly different filters for 6 hours, making 2,400 LLM calls and
+      costing $310, then produces nothing.
+    analogy: >-
+      A dishwasher with no timer that keeps rinsing the same plate because a spot won't
+      come off.
+    breaks:
+      - The loop has no ceiling on steps, tokens, time or money.
+      - The model doesn't recognise that it is repeating itself.
+      - No partial result or escalation path exists.
+    root_cause: >-
+      An unbounded agent loop with no circuit breaker.
+    where: Agent runtime.
+    fix:
+      - Cap steps, tokens, wall-clock time and dollars per run, with per-tenant budgets.
+      - Detect loops (same tool and arguments, or no new information after N steps) and stop.
+      - On a cap, return a partial result with what was tried, and route to a human queue.
+    code:
+      lang: python
+      src: |
+        for step in range(MAX_STEPS):                       # hard ceiling
+            if budget.spent_usd > MAX_USD or clock() > deadline:
+                return escalate(state, reason="budget")
+            call = agent.next_action(state)
+            sig = (call.tool, canonical_json(call.args))
+            if seen[sig] >= 2:                              # loop detector
+                return escalate(state, reason="repeating")
+            seen[sig] += 1
+            state = state.with_result(run_tool(call))
+        return escalate(state, reason="max_steps")
+    detect:
+      - Alerts on steps per run, run duration and cost outliers.
+    tradeoff: >-
+      Caps can stop legitimately long investigations; set them per task type and allow a
+      human to extend.
+    variant: >-
+      Telco: a network-diagnosis agent keeps re-running the same ping and traceroute on a
+      dead site overnight.
+    line: Every loop needs a circuit breaker.
+    related: [obs-15, cost-07]
+    diagram:
+      bad_label: "Anti-pattern: while not done, with no ceiling"
+      good_label: "Fix: step, time and money caps plus loop detection"
+      bad: [["Recon break", "Split settlement"], ["Agent loop", "No limit"], ["Same queries", "2,400 calls"], ["$310 spent", "Nothing found"]]
+      good: [["Caps", "Steps, time, $"], ["Loop detector", "Same tool+args"], ["Partial result", "What was tried"], ["Human queue", "Escalated"]]
+
+  - id: agf-03
+    title: Care agent exposed to 60 BSS APIs
+    domain: telco
+    severity: medium
+    tags: [tool selection, tool sprawl, routing]
+    scenario: >-
+      A carrier gives its care agent every BSS API as a tool: 60 tools across CRM,
+      billing, ordering, inventory, payments and loyalty. Tool definitions take 22k tokens
+      per call. The agent picks the wrong tool 25% of the time, for example calling
+      get_invoice instead of get_bill_explanation, or update_product instead of
+      add_addon.
+    analogy: >-
+      Giving a new hire a 60-button remote control on day one and asking them to change
+      the channel.
+    breaks:
+      - Similar tools confuse selection.
+      - Tool definitions consume context and money on every call.
+      - Accuracy degrades as the toolbox grows.
+    root_cause: >-
+      APIs were exposed one-to-one as tools, with no grouping or routing.
+    where: Tool design and agent architecture.
+    fix:
+      - Route by intent first (billing, orders, tech support), then load only that domain's tools.
+      - Design fewer task-shaped tools that wrap several APIs, instead of one tool per endpoint.
+      - Keep about 10-20 tools visible at a time; use tool search for the long tail.
+    detect:
+      - Tool-selection accuracy on a labelled eval set; tool-call error rates.
+    tradeoff: >-
+      Routing adds a classification step and can misroute; keep a fallback that loads more
+      tools.
+    variant: >-
+      FinTech: a banking agent with 45 core-banking tools confuses transfer_internal with
+      transfer_external.
+    line: Tool choice degrades as the toolbox grows.
+    related: [tool-03, ctx-11]
+    diagram:
+      bad_label: "Anti-pattern: every BSS API as a tool"
+      good_label: "Fix: route by intent, load a small task-shaped toolset"
+      bad: [["60 tools", "All BSS APIs"], ["22k tokens", "Per call"], ["Similar names", "Confusion"], ["25% wrong", "Tool picked"]]
+      good: [["Intent router", "Billing, orders"], ["Domain tools", "10-20 visible"], ["Task-shaped", "Wrap APIs"], ["Tool search", "Long tail"]]
+
+  - id: agf-04
+    title: Payment tool amount in cents read as dollars
+    domain: fintech
+    severity: critical
+    tags: [tool schema, units, validation]
+    scenario: >-
+      A small-business banking agent can schedule supplier payments. The tool parameter is
+      amount: integer, documented only as "payment amount". The API expects minor units
+      (cents). A user asks to pay an invoice of $4,500. The agent passes 4500, and $45.00
+      is sent. Another time it passes 450000 for $45, sending $4,500, which is only caught
+      by an approval limit.
+    analogy: >-
+      A form field labelled "amount" with no currency or units. Half the people write
+      dollars, half write cents.
+    breaks:
+      - The tool description doesn't state units, format or limits.
+      - The model guesses the convention, inconsistently.
+      - The API accepts any positive integer.
+    root_cause: >-
+      Tool schemas were written like internal API signatures, not like documentation for a
+      new user.
+    where: Tool definition and validation.
+    fix:
+      - Use explicit, typed parameters (amount as a decimal string plus an ISO 4217 currency code) and convert to minor units inside the tool.
+      - Write the description as for a new hire (when to use it, examples, units, limits, what not to do).
+      - Validate inside the tool (amount equals the invoice amount on file, within limits) and return an actionable error.
+      - Echo back a human-readable confirmation for approval before execution.
+    code:
+      lang: python
+      src: |
+        class SchedulePayment(BaseModel):
+            """Schedule a supplier payment. Amount is in MAJOR units (e.g. "4500.00" = $4,500).
+            Use only after the user confirmed payee and amount. Never infer the amount."""
+            payee_id: str
+            amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+            currency: Literal["USD", "EUR", "GBP"]
+            invoice_id: str          # tool checks amount == invoice.amount_due
+    detect:
+      - Mismatch alerts between payment amount and invoice amount; distribution of amounts per payee.
+    tradeoff: >-
+      Stricter schemas reject some legitimate free-form requests; respond with a
+      clarifying question instead.
+    variant: >-
+      Telco: a data-add-on tool takes size as an integer and the agent mixes MB and GB,
+      selling 1 MB packs instead of 1 GB.
+    line: Tool descriptions are prompts, so engineer them.
+    related: [tool-02, agf-11]
+    diagram:
+      bad_label: "Anti-pattern: 'amount: integer', no units"
+      good_label: "Fix: typed units, in-tool validation, confirmation"
+      bad: [["Pay $4,500", "Invoice"], ["amount: int", "Units unclear"], ["Sends 4500", "Read as cents"], ["$45.00 paid", "Supplier short"]]
+      good: [["Decimal + ISO", "Major units"], ["Doc for humans", "Examples, limits"], ["Check invoice", "Inside tool"], ["Confirm", "Before execute"]]
+
+  - id: agf-05
+    title: Care agent issues a $400 goodwill credit on its own
+    domain: telco
+    severity: high
+    tags: [human in the loop, risk tiers, write tools]
+    scenario: >-
+      A carrier's care agent has a tool to apply bill credits. A frustrated customer
+      claims three outages and demands compensation. The agent, aiming to be helpful,
+      applies a $400 credit. Similar patterns spread on a forum, and goodwill credits
+      triple in a month.
+    analogy: >-
+      Giving a new receptionist the company credit card with no spending limit and asking
+      them to keep customers happy.
+    breaks:
+      - A write tool with financial impact runs autonomously.
+      - The limit is in the prompt ("don't give more than $50"), which the model can be talked out of.
+      - No check against actual outage records.
+    root_cause: >-
+      Business limits and approvals are enforced by instructions instead of by the tool and
+      a human gate.
+    where: Tool layer and approval workflow.
+    fix:
+      - Classify tools by risk; credits above a small limit require human approval with the conversation and evidence attached.
+      - Enforce the limit inside the tool and the billing system, not in the prompt.
+      - Check outage claims against network incident records (OSS) before offering anything.
+    detect:
+      - Credits per agent version, per customer and per reason; spike alerts.
+    tradeoff: >-
+      Approvals slow resolution; keep small credits automatic and fast.
+    variant: >-
+      FinTech: a bank agent reverses a $300 overdraft fee for every customer who says
+      they are a student.
+    line: Put the guardrail in the tool, not the prompt.
+    related: [gov-02, prm-16, sec-05]
+    diagram:
+      bad_label: "Anti-pattern: autonomous credit tool, limit in prompt"
+      good_label: "Fix: limits in the tool, outage check, approval"
+      bad: [["Angry customer", "Claims outages"], ["Credit tool", "No hard limit"], ["$400 credit", "Applied"], ["Credits x3", "Pattern spreads"]]
+      good: [["Outage check", "OSS records"], ["Tool limit", "Small auto cap"], ["Approval", "Above cap"], ["Credit audit", "Per reason"]]
+
+  - id: agf-06
+    title: Retry after timeout sends a wire twice
+    domain: fintech
+    severity: critical
+    tags: [idempotency, retries, payments]
+    scenario: >-
+      A treasury agent initiates a $250,000 vendor wire. The payment gateway processes it
+      but the response times out. The framework's automatic retry calls initiate_wire
+      again, and a second wire is sent. Recovering it takes nine days and a recall
+      request through the correspondent bank.
+    analogy: >-
+      Pressing the lift button again because the light was slow. For lifts it's harmless.
+      For money, it orders a second lift.
+    breaks:
+      - The first call succeeded, but the response was lost.
+      - Generic retry logic treats all tools as safe to repeat.
+      - The API has no idempotency key.
+    root_cause: >-
+      Side-effecting tool calls are retried without idempotency.
+    where: Tool layer and payment API contract.
+    fix:
+      - Send an idempotency key derived from the business request (payment instruction id) on every write call.
+      - Before retrying, query the status of the original request.
+      - Mark tools as read or write; the framework never auto-retries writes.
+      - Run payment execution in a durable workflow with exactly-once semantics at the business level.
+    detect:
+      - Duplicate detection on (beneficiary, amount, date) within a window; reconciliation alerts.
+    tradeoff: >-
+      Status checks add latency to error paths only, which is acceptable for payments.
+    variant: >-
+      Telco: a retry on a timed-out SIM activation creates two orders and two ICCIDs
+      bound to the same number.
+    line: Assume every tool call might run twice.
+    related: [tool-05, agf-07]
+    diagram:
+      bad_label: "Anti-pattern: auto-retry a payment call"
+      good_label: "Fix: idempotency key, status check, no auto-retry on writes"
+      bad: [["Wire $250k", "Initiated"], ["Timeout", "Response lost"], ["Auto-retry", "Same call"], ["Two wires", "9-day recall"]]
+      good: [["Idem key", "Instruction id"], ["Status check", "Before retry"], ["Writes marked", "No auto-retry"], ["Durable flow", "Exactly once"]]
+
+  - id: agf-07
+    title: B2B order agent loses state on a pod restart
+    domain: telco
+    severity: medium
+    tags: [durable execution, checkpointing, long running]
+    scenario: >-
+      An enterprise ordering agent coordinates a 40-site SD-WAN order over several hours:
+      site surveys, feasibility, pricing approvals and order creation. A Kubernetes pod is
+      rescheduled during a deploy. The agent's in-memory state is lost, and it restarts
+      from scratch, re-requesting surveys and creating duplicate draft orders.
+    analogy: >-
+      Writing a long report without saving. When the laptop restarts, you start over.
+    breaks:
+      - State lives only in process memory.
+      - Long-running work outlives containers, deploys and network blips.
+      - Restarting re-executes side effects.
+    root_cause: >-
+      No durable execution or checkpointing.
+    where: Agent runtime.
+    fix:
+      - Checkpoint state after every step to a durable store (LangGraph checkpointers, Temporal, a database).
+      - Resume from the last checkpoint after a restart, skipping completed side effects.
+      - Combine checkpointing with idempotent tools so replays are safe.
+    detect:
+      - Count of runs restarted from step 1; duplicate draft orders per order id.
+    tradeoff: >-
+      Checkpointing adds write latency and storage; it is small relative to multi-hour
+      tasks.
+    variant: >-
+      FinTech: a commercial loan document-collection agent loses progress overnight and
+      re-emails the borrower for documents already received.
+    line: Long-running agents need durable execution.
+    related: [agf-06, agf-15]
+    diagram:
+      bad_label: "Anti-pattern: agent state only in memory"
+      good_label: "Fix: checkpoint every step and resume"
+      bad: [["40-site order", "Hours long"], ["Pod restart", "During deploy"], ["State lost", "In memory"], ["Starts over", "Duplicates"]]
+      good: [["Checkpoint", "After each step"], ["Durable store", "DB or Temporal"], ["Resume", "Skip done steps"], ["Idempotent", "Safe replay"]]
+
+  - id: agf-08
+    title: Five agents for a loan pre-qualification
+    domain: fintech
+    severity: medium
+    tags: [multi-agent, complexity, cost]
+    scenario: >-
+      A lender builds loan pre-qualification as five agents: intake, income analyst,
+      credit analyst, risk reviewer and writer. It costs 8 times more per application and
+      takes 40 seconds. A single agent with three tools (income verification, credit
+      pull, pricing rules) matches its accuracy in 6 seconds.
+    analogy: >-
+      Five people passing a form around an office when one person with the right tools
+      could fill it in.
+    breaks:
+      - Each handoff loses context and adds failure modes.
+      - Coordination overhead dominates the actual work.
+      - Nobody measured whether more agents helped.
+    root_cause: >-
+      Multi-agent design chosen for appearance, not because of a measured need.
+    where: Architecture decision.
+    fix:
+      - Start with one agent and good tools.
+      - Split only for a measured reason (context overflow, real parallelism, different permissions or a separate review step).
+      - Prove each added agent with evals on quality, latency and cost.
+    detect:
+      - Ablation evals that remove or merge agents.
+    tradeoff: >-
+      Single agents can get overloaded on very broad tasks; that is when to split.
+    variant: >-
+      Telco: a plan-change flow with planner, eligibility, pricing and confirmation agents
+      that one agent with a catalog tool handles better.
+    line: Add agents to solve a measured problem, not for the diagram.
+    related: [mas-01, mas-02]
+    diagram:
+      bad_label: "Anti-pattern: five agents for one task"
+      good_label: "Fix: one agent with tools, split only on evidence"
+      bad: [["5 agents", "Intake to writer"], ["Handoffs", "Context lost"], ["8x cost", "40 seconds"], ["Same accuracy", "As one agent"]]
+      good: [["One agent", "3 tools"], ["Measure", "Q, latency, $"], ["Split if", "Need is proven"], ["Ablation", "Evals"]]
+
+  - id: agf-09
+    title: Framework default prompt overrides the brand voice
+    domain: telco
+    severity: medium
+    tags: [abstractions, transparency, hidden prompts]
+    scenario: >-
+      A carrier builds its care agent on a high-level framework. Responses start with
+      "As an AI assistant, I can help you with that!" and occasionally mention tools by
+      internal names. The team spends days searching their own prompts before finding a
+      default system prompt and output parser injected by the framework three layers
+      down.
+    analogy: >-
+      Renting a furnished flat and not knowing what's in the locked cupboard until it
+      starts leaking.
+    breaks:
+      - The framework adds hidden prompts, retries and parsing.
+      - Developers never see the final request sent to the model.
+      - Framework upgrades change behaviour silently.
+    root_cause: >-
+      A heavy abstraction adopted without visibility into what it sends.
+    where: Framework choice and tracing.
+    fix:
+      - Trace and inspect the exact final messages and tool definitions sent to the model.
+      - Own critical prompts in your code; override or remove framework defaults.
+      - Prefer thin abstractions, and pin framework versions with upgrade evals.
+    detect:
+      - Diff the rendered request across framework versions in CI.
+    tradeoff: >-
+      Thinner abstractions mean more code to own; for critical paths that's worth it.
+    variant: >-
+      FinTech: a framework's default retry parser silently "fixes" malformed amounts in
+      payment JSON by dropping fields.
+    line: Always know exactly what goes to the model.
+    related: [tel-19, ctx-19]
+    diagram:
+      bad_label: "Anti-pattern: hidden framework prompts and parsers"
+      good_label: "Fix: trace the final request, own critical prompts"
+      bad: [["Framework", "High level"], ["Hidden prompt", "3 layers down"], ["Off-brand", "'As an AI...'"], ["Days lost", "Searching"]]
+      good: [["Trace request", "Exact messages"], ["Own prompts", "Override defaults"], ["Pin version", "Upgrade evals"], ["Diff in CI", "Rendered calls"]]
+
+  - id: agf-10
+    title: 80 KB of usage records dumped into the agent context
+    domain: telco
+    severity: medium
+    tags: [tool output, context, summarization]
+    scenario: >-
+      A billing agent calls get_usage_records to explain a high bill. The tool returns
+      the raw rated usage (TMF635) for the cycle, 80 KB of JSON with 1,900 records. The
+      agent loses track of the customer's question, mentions irrelevant SMS records, and
+      each turn costs 25k tokens.
+    analogy: >-
+      Asking an accountant why the bill is high and getting the whole ledger dropped on
+      your desk.
+    breaks:
+      - Tools return everything the API returns.
+      - Noise buries the user's question and the instructions.
+      - Cost and latency rise with every turn.
+    root_cause: >-
+      Tool outputs are designed for machines, not for the model's limited attention.
+    where: Tool design.
+    fix:
+      - Shape tool output for the task (aggregate by usage type and day, top drivers, anomalies).
+      - Paginate or let the agent request details for one category.
+      - Store large raw results outside the context and pass a reference id.
+    detect:
+      - Tokens per tool result; answer quality against tool output size.
+    tradeoff: >-
+      Pre-aggregation can hide a detail the agent needed; offer a drill-down tool.
+    variant: >-
+      FinTech: a spending-insights agent receives a full year of card transactions as raw
+      JSON instead of category totals.
+    line: Tools should return answers, not data dumps.
+    related: [tool-04, ctx-13]
+    diagram:
+      bad_label: "Anti-pattern: raw tool output into context"
+      good_label: "Fix: task-shaped summaries plus drill-down"
+      bad: [["High bill?", "Customer asks"], ["get_usage", "1,900 records"], ["80 KB JSON", "In context"], ["Lost focus", "25k tokens"]]
+      good: [["Aggregate", "By type, day"], ["Top drivers", "Anomalies"], ["Drill-down", "One category"], ["Reference id", "Raw kept aside"]]
+
+  - id: agf-11
+    title: Agent retries an opaque KYC vendor error ten times
+    domain: fintech
+    severity: medium
+    tags: [error handling, actionable errors, retries]
+    scenario: >-
+      An onboarding agent calls an identity-verification vendor. The vendor returns
+      HTTP 422 with body "Error". The agent retries the same call 10 times, then tells the
+      customer verification succeeded. The vendor's actual problem was an expired date of
+      birth format.
+    analogy: >-
+      A satnav that only says "error" when you take a wrong turn. You keep driving in
+      circles.
+    breaks:
+      - Errors reach the model as stack traces or bare codes.
+      - The model can't tell retryable from fatal errors.
+      - The model fills the gap with an invented outcome.
+    root_cause: >-
+      Tool errors are not designed as instructions for the next step.
+    where: Tool layer.
+    fix:
+      - Translate errors into structured, actionable messages ("date_of_birth must be YYYY-MM-DD; received 07/03/1990").
+      - Classify errors as retryable, fixable by the agent, or fatal, and say which.
+      - Return explicit status values (VERIFIED, FAILED, PENDING) and forbid success claims without VERIFIED.
+    detect:
+      - Same-error repeat counts; claimed outcomes compared with tool results.
+    tradeoff: >-
+      Mapping vendor errors takes effort; start with the top 10 by frequency.
+    variant: >-
+      Telco: a serviceability check returns "500" and the agent tells the customer fiber is
+      available at their address.
+    line: Error messages are instructions for the next step.
+    related: [agf-04, aev-12, tool-06]
+    diagram:
+      bad_label: "Anti-pattern: opaque errors back to the model"
+      good_label: "Fix: structured, actionable, classified errors"
+      bad: [["KYC call", "Vendor API"], ["422 'Error'", "No detail"], ["10 retries", "Same call"], ["Claims success", "Invented"]]
+      good: [["Map errors", "Field + reason"], ["Classify", "Retry, fix, fatal"], ["Status enum", "VERIFIED only"], ["Fix and retry", "Once"]]
+
+  - id: agf-12
+    title: Care agent runs with an admin BSS service account
+    domain: telco
+    severity: critical
+    tags: [least privilege, credentials, blast radius]
+    scenario: >-
+      A carrier's care agent authenticates to BSS with a shared admin service account. A
+      prompt injection in a customer's chat convinces it to "update the plan on account
+      X", which belongs to someone else. The change succeeds because the service account
+      can modify any account.
+    analogy: >-
+      Giving the shop assistant the master key to every safe deposit box because it is
+      easier than issuing individual keys.
+    breaks:
+      - The agent's permissions are far broader than the customer it serves.
+      - Account ownership is not re-checked in tools.
+      - Any mistake or injection has full blast radius.
+    root_cause: >-
+      Agent credentials are not scoped to the user and task.
+    where: Identity and access management for tools.
+    fix:
+      - Act on behalf of the authenticated customer (delegated, scoped tokens), not as an admin.
+      - Re-check ownership inside every tool (account_id must belong to the session's party).
+      - Use separate, narrow service accounts per tool, and sandbox code execution.
+    detect:
+      - Alerts for cross-account access in tool calls; access reviews of agent credentials.
+    tradeoff: >-
+      Delegated auth adds integration work with the identity provider and BSS.
+    variant: >-
+      FinTech: a banking agent's service account can move money from any account, so an
+      injected instruction transfers funds from another customer.
+    line: An agent should never have more access than the user it serves.
+    related: [sec-05, tool-07]
+    diagram:
+      bad_label: "Anti-pattern: shared admin account for the agent"
+      good_label: "Fix: delegated, scoped tokens and ownership checks"
+      bad: [["Care agent", "Admin account"], ["Injection", "Other account"], ["No owner check", "In tool"], ["Plan changed", "Wrong customer"]]
+      good: [["User token", "Delegated"], ["Owner check", "Every tool"], ["Narrow scopes", "Per tool"], ["Audit", "Cross-account"]]
+
+  - id: agf-13
+    title: Account-closure plan ignores pending transactions
+    domain: fintech
+    severity: medium
+    tags: [replanning, observe, plan execute]
+    scenario: >-
+      A bank's account-closure agent plans four steps: confirm identity, transfer the
+      balance, close the account, send confirmation. During execution, the balance
+      check shows a pending card authorisation. The agent continues with the original
+      plan, closes the account, and the pending payment later bounces with fees.
+    analogy: >-
+      Following a recipe exactly even after you discover the oven is broken.
+    breaks:
+      - The plan was made once, upfront, from assumptions.
+      - New observations didn't trigger re-planning.
+      - Preconditions for closure weren't checked in code.
+    root_cause: >-
+      Plan-then-execute with no observe and re-plan step.
+    where: Agent control loop and tool preconditions.
+    fix:
+      - Use a plan-execute-observe loop where tool results can change the plan.
+      - Enforce preconditions in the close_account tool (no pending items, zero balance) and return why it refused.
+      - Keep the plan as editable state visible in traces.
+    detect:
+      - Closures followed by returned items; tool refusals by reason.
+    tradeoff: >-
+      Re-planning adds LLM calls; trigger it only on unexpected results.
+    variant: >-
+      Telco: a disconnect agent keeps going after discovering the line has an active
+      device-installment balance.
+    line: Plans are hypotheses, so update them on evidence.
+    related: [agf-01, rag-17]
+    diagram:
+      bad_label: "Anti-pattern: fixed plan, no re-planning"
+      good_label: "Fix: observe results, re-plan, tool preconditions"
+      bad: [["Plan 4 steps", "Upfront"], ["Pending auth", "Observed"], ["Plan continues", "Ignored"], ["Payment bounces", "Fees"]]
+      good: [["Plan", "As state"], ["Observe", "Each result"], ["Re-plan", "On surprise"], ["Preconditions", "In close tool"]]
+
+  - id: agf-14
+    title: Diagnosis agent tells the dispatch agent to see above
+    domain: telco
+    severity: medium
+    tags: [handoffs, contracts, multi agent]
+    scenario: >-
+      A field-service system has a diagnosis agent and a dispatch agent. The diagnosis
+      agent ends with "Root cause as discussed above; schedule accordingly." The dispatch
+      agent has its own context, so there is no "above". It books a generic technician
+      without the fiber splicing skill, and the job needs a second visit.
+    analogy: >-
+      Handing over a patient with a note saying "see what we talked about". The next
+      shift wasn't in the room.
+    breaks:
+      - Agents pass free text with implicit references.
+      - Each agent has a different context window.
+      - Required fields for the next step aren't enforced.
+    root_cause: >-
+      No typed contract between agents.
+    where: Multi-agent interfaces.
+    fix:
+      - Define a handoff schema (site_id, fault_type, required_skill, parts, priority, evidence) validated in code.
+      - Store shared artifacts in a state store referenced by id.
+      - Reject handoffs that are missing required fields.
+    detect:
+      - Second-visit rate; handoff validation failures.
+    tradeoff: >-
+      Schemas need maintenance as processes change; version them.
+    variant: >-
+      FinTech: a fraud-triage agent hands a case to a customer-contact agent without the
+      confirmed fraudulent transactions, and the customer is asked about the wrong ones.
+    line: Agent handoffs need API contracts.
+    related: [mas-03, aev-18]
+    diagram:
+      bad_label: "Anti-pattern: free-text handoff between agents"
+      good_label: "Fix: typed handoff schema and shared state"
+      bad: [["Diagnosis", "Agent"], ["'See above'", "Free text"], ["Dispatch", "No context"], ["Wrong skill", "Second visit"]]
+      good: [["Handoff schema", "Skill, parts"], ["Validate", "In code"], ["Shared state", "By id"], ["Right tech", "First visit"]]
+
+  - id: agf-15
+    title: Mortgage document agent runs inside a 30-second HTTP call
+    domain: fintech
+    severity: medium
+    tags: [async jobs, queues, timeouts]
+    scenario: >-
+      A mortgage lender exposes its document-review agent behind an API gateway with a
+      30-second timeout. Reviews of a 200-page application take 2-5 minutes. Most requests
+      time out at the gateway, but the agent keeps running, and clients resubmit,
+      creating duplicate reviews and double costs.
+    analogy: >-
+      Ordering a wedding cake at a drive-through window and expecting it before the
+      driver behind you honks.
+    breaks:
+      - Agent runtime is long and unpredictable.
+      - Synchronous request-response doesn't fit long jobs.
+      - Clients retry on timeout, duplicating work.
+    root_cause: >-
+      Agents modelled as requests instead of jobs.
+    where: Service architecture.
+    fix:
+      - Accept the request, return a job id, run the agent asynchronously from a queue.
+      - Provide status endpoints, progress streaming or webhooks.
+      - Deduplicate submissions with an idempotency key.
+    detect:
+      - Gateway timeouts and duplicate job counts.
+    tradeoff: >-
+      Async adds job storage and client changes; it is required for long tasks.
+    variant: >-
+      Telco: a B2B quote-generation agent behind a 60-second CPQ integration timeout.
+    line: Agents are jobs, not requests.
+    related: [agf-07]
+    diagram:
+      bad_label: "Anti-pattern: long agent inside an HTTP request"
+      good_label: "Fix: async job, status, idempotent submit"
+      bad: [["Review request", "200 pages"], ["30 s gateway", "Timeout"], ["Agent runs on", "Unseen"], ["Resubmits", "Double cost"]]
+      good: [["Job id", "Returned now"], ["Queue + worker", "Async"], ["Status, stream", "Or webhook"], ["Idem key", "No duplicates"]]
+
+  - id: agf-16
+    title: Provider outage takes the care bot down at bill-run time
+    domain: telco
+    severity: high
+    tags: [fallback, gateway, resilience]
+    scenario: >-
+      A carrier's care bot depends on one model from one provider. On the first day of the
+      billing cycle, when contact volume peaks, the provider has a 2-hour outage. The bot
+      returns errors, all traffic hits the call centre, and wait times reach 50 minutes.
+    analogy: >-
+      A shop with one card reader and no backup. When it fails, the queue goes out the
+      door.
+    breaks:
+      - Single model, single provider, no degradation path.
+      - Rate limits and outages happen at peak times.
+      - No non-LLM fallback for top intents.
+    root_cause: >-
+      The LLM was treated as always available.
+    where: Serving architecture.
+    fix:
+      - Route through an LLM gateway with retries, backoff and fallback models or providers (tested with evals).
+      - Provide a degraded mode (menu-driven flows for top intents such as bill pay and balance).
+      - Load-test against provider rate limits for peak days.
+    detect:
+      - Provider error rates, fallback activation metric.
+    tradeoff: >-
+      Fallback models behave differently; evaluate them and accept slightly lower quality
+      during incidents.
+    variant: >-
+      FinTech: a bank's fraud alert explainer stops working during a provider outage
+      on Black Friday.
+    line: Design for the model being unavailable.
+    related: [ops-07, ops-16, obs-14]
+    diagram:
+      bad_label: "Anti-pattern: one model, one provider, no fallback"
+      good_label: "Fix: gateway with fallbacks plus a degraded mode"
+      bad: [["Bill-run day", "Peak traffic"], ["Provider down", "2 hours"], ["Bot errors", "No fallback"], ["50-min waits", "Call centre"]]
+      good: [["LLM gateway", "Retry, backoff"], ["Fallback model", "Evaluated"], ["Degraded mode", "Top intents"], ["Load test", "Peak days"]]
+
+  - id: agf-17
+    title: Agent computes a loan payoff and gets daily interest wrong
+    domain: fintech
+    severity: high
+    tags: [deterministic code, calculations, tools]
+    scenario: >-
+      A personal-loan servicing agent is asked for a payoff amount as of next Friday. It
+      reasons through principal, daily interest and fees in text and quotes $12,418.77.
+      The servicing system says $12,455.32. The customer pays the quoted amount, the loan
+      stays open with a small balance and goes delinquent.
+    analogy: >-
+      Asking a brilliant essayist to do your tax return in their head.
+    breaks:
+      - LLMs predict tokens and are unreliable at multi-step arithmetic.
+      - Day-count conventions and fee rules are exact.
+      - The answer looks precise, so nobody doubts it.
+    root_cause: >-
+      The model performs calculations that belong in code.
+    where: Tool design.
+    fix:
+      - Get the payoff quote from the servicing system's payoff API.
+      - Give the agent a calculator or date tool for anything else, and never let it compute money in text.
+      - Validate that any amount in the answer equals a tool result.
+    detect:
+      - Numeric-faithfulness checks on all money amounts in answers.
+    tradeoff: >-
+      None worth discussing; money maths belongs in the system of record.
+    variant: >-
+      Telco: an agent prorates a mid-cycle plan change in its head and quotes a wrong
+      first bill.
+    line: Use the LLM for judgement and code for arithmetic.
+    related: [rag-12, rag-01]
+    diagram:
+      bad_label: "Anti-pattern: the model does the money maths"
+      good_label: "Fix: payoff API, calculator tool, amount checks"
+      bad: [["Payoff Friday?", "Customer asks"], ["LLM computes", "In text"], ["$12,418.77", "Wrong"], ["Balance left", "Delinquent"]]
+      good: [["Payoff API", "Servicing system"], ["Calc tool", "If needed"], ["Amount check", "Equals tool"], ["$12,455.32", "Correct"]]
+
+  - id: agf-18
+    title: Three-hour troubleshooting session forgets the original fault
+    domain: telco
+    severity: medium
+    tags: [memory, context rot, compaction]
+    scenario: >-
+      A home-internet support agent works with a customer through modem resets, Wi-Fi
+      channel changes and speed tests over three hours of intermittent chat. By the end
+      it suggests resetting the modem again and has forgotten the customer said the
+      problem only happens when it rains, a strong hint of a damaged outdoor cable.
+    analogy: >-
+      A meeting that runs so long nobody remembers the agenda.
+    breaks:
+      - Every turn and tool result is appended forever.
+      - Early key facts get diluted by later noise.
+      - Cost per turn grows steadily.
+    root_cause: >-
+      No memory management or pinned task state.
+    where: Context management in the agent runtime.
+    fix:
+      - Keep a pinned task-state block (problem, key symptoms, steps tried, results).
+      - Summarise or drop old tool outputs, and keep constraints and symptoms verbatim.
+      - Store the case in a ticket (TMF621) so a human or later session can continue.
+    detect:
+      - Repeated-step rate in long sessions; tokens per turn over time.
+    tradeoff: >-
+      Summaries lose detail; keep critical facts verbatim in the pinned block.
+    variant: >-
+      FinTech: a long mortgage-application chat forgets that the borrower is self-employed
+      and asks for payslips again.
+    line: Memory needs a retention policy.
+    related: [ctx-02, ctx-15, mem-02]
+    diagram:
+      bad_label: "Anti-pattern: append every turn forever"
+      good_label: "Fix: pinned task state plus compaction"
+      bad: [["3-hour session", "Many steps"], ["All appended", "Tool outputs"], ["Rain clue lost", "Early fact"], ["Reset again", "Repeated step"]]
+      good: [["Pinned state", "Symptoms, tried"], ["Compact", "Old tool output"], ["Ticket", "TMF621 case"], ["Right lead", "Outdoor cable"]]
+
+  - id: agf-19
+    title: Pay John sends money to the wrong John
+    domain: fintech
+    severity: critical
+    tags: [clarification, ambiguity, payees]
+    scenario: >-
+      A banking assistant receives "Send $500 to John for rent." The customer has three
+      saved payees named John. The agent picks the most recently used, John Martinez,
+      instead of the landlord John Okafor. The payment is instant (no recall), and getting
+      the money back depends on the recipient's goodwill.
+    analogy: >-
+      A courier who delivers to the first house on the street with the right surname
+      instead of knocking to ask.
+    breaks:
+      - The agent is designed to always complete the task.
+      - Ambiguity is resolved by a heuristic, silently.
+      - The payment rail is irreversible.
+    root_cause: >-
+      No clarification action and no rule for when to ask.
+    where: Agent policy and tool design.
+    fix:
+      - Give the agent an ask_user action, and define when it must ask (several matches, new payee, high amount, irreversible rail).
+      - Make the payment tool require a resolved payee_id, never a name.
+      - Show a confirmation with full payee details before sending.
+    detect:
+      - Rate of payments to non-usual payees followed by disputes or recall requests.
+    tradeoff: >-
+      Extra questions add friction; ask only when ambiguity or risk is real.
+    variant: >-
+      Telco: "Add the data pass to Sam's line" on a family plan with two lines for Sam and
+      Samantha.
+    line: Asking is a valid action.
+    related: [gov-02, agf-04]
+    diagram:
+      bad_label: "Anti-pattern: always act, guess the payee"
+      good_label: "Fix: ask when ambiguous, confirm before paying"
+      bad: [["'Pay John'", "$500 rent"], ["3 Johns", "Saved payees"], ["Picks recent", "Heuristic"], ["Wrong John", "Instant, no recall"]]
+      good: [["Detect", "Several matches"], ["Ask user", "Which John?"], ["Payee id", "Required"], ["Confirm", "Full details"]]
+
+  - id: agf-20
+    title: Frontier model used for every care-flow step
+    domain: telco
+    severity: medium
+    tags: [model routing, cost, small models]
+    scenario: >-
+      A carrier's care agent uses the largest model for every call: intent detection,
+      entity extraction, policy checks, tool selection and the final reply. The monthly
+      bill reaches $90k, and 70% of calls are simple classification and extraction steps.
+    analogy: >-
+      Sending a senior surgeon to take every patient's temperature.
+    breaks:
+      - Simple steps don't need frontier reasoning.
+      - Latency is higher than necessary at every step.
+      - Cost scales with call volume.
+    root_cause: >-
+      No model routing by task difficulty.
+    where: Model selection per step.
+    fix:
+      - Use small, fast models for classification, extraction and routing; large models for planning and complex reasoning.
+      - Validate each choice with evals for that step.
+      - Use a gateway to switch models per step without code changes.
+    detect:
+      - Cost and latency per step; quality per step after routing changes.
+    tradeoff: >-
+      More models means more evals and versions to manage.
+    variant: >-
+      FinTech: a bank uses its largest model to classify card transaction categories at
+      100 million transactions a month.
+    line: Match the model to the step.
+    related: [cost-02, cost-01]
+    diagram:
+      bad_label: "Anti-pattern: biggest model for every step"
+      good_label: "Fix: route each step to the smallest model that passes"
+      bad: [["Every step", "Frontier model"], ["70% simple", "Classify, extract"], ["High latency", "Every call"], ["$90k/month", "Bill"]]
+      good: [["Small model", "Classify, extract"], ["Large model", "Plan, reason"], ["Per-step evals", "Validate"], ["Gateway", "Switch by config"]]

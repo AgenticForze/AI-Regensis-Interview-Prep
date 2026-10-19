@@ -1,0 +1,773 @@
+id: observability
+order: 5
+prefix: obs
+title: Observability
+summary: >-
+  Observability means you can answer a new question about production behaviour without
+  shipping new code. In LLM systems a 200 OK can still be a wrong answer, a promise the
+  company must honour, or a regulatory breach, so you need traces of what the model saw
+  and did, quality signals, cost per tenant, and SLOs with owners.
+scenarios:
+  - id: obs-01
+    title: All dashboards green while the bot invents outage ETAs
+    domain: telco
+    severity: high
+    tags: [quality monitoring, semantic failures, outages]
+    scenario: >-
+      During a regional fiber outage, a carrier's chatbot tells thousands of customers
+      "Service will be restored by 6 pm." No such estimate existed; the NOC's restoration
+      time was unknown. APM dashboards show 99.9% availability and normal latency the whole
+      time. Social media catches it before the operations team does.
+    analogy: >-
+      A smoke detector that only checks its own battery. It reports "working" while the
+      kitchen burns.
+    breaks:
+      - Monitoring covers availability, latency and errors only.
+      - A hallucination returns HTTP 200.
+      - No signal measured whether answers were grounded in outage data.
+    root_cause: >-
+      Classic APM was used as the only monitoring for a semantic system.
+    where: Production monitoring.
+    fix:
+      - Add quality signals (sampled online judge for faithfulness to tool data, refusal rate, escalation rate, thumbs-down rate) per intent.
+      - For outage intents, check that any time or credit promise appears in the incident system (TMF642 alarm or incident record) and block it otherwise.
+      - Alert on spikes in specific claims (times, money, promises) during incidents.
+    detect:
+      - Online faithfulness score per intent with alerts; claim-pattern monitoring.
+    tradeoff: >-
+      Online judging costs money; sample, and run cheap rule checks on 100% of risky
+      intents.
+    variant: >-
+      FinTech: a bank bot tells customers a payment outage will be fixed "within the hour"
+      during a core-banking incident with no ETA.
+    line: In LLM systems, 200 OK doesn't mean correct.
+    related: [obs-18, obs-19]
+    diagram:
+      bad_label: "Anti-pattern: APM only (uptime, latency, errors)"
+      good_label: "Fix: quality signals and claim checks per intent"
+      bad: [["Fiber outage", "Region"], ["Bot: 'by 6 pm'", "Invented ETA"], ["99.9% uptime", "All green"], ["Social media", "Finds it first"]]
+      good: [["Faithfulness", "Sampled judge"], ["Claim check", "Vs incident data"], ["Block promise", "If unsupported"], ["Spike alerts", "Times, credits"]]
+
+  - id: obs-02
+    title: Wrong escrow answer cannot be reconstructed
+    domain: fintech
+    severity: high
+    tags: [tracing, replay, mortgage]
+    scenario: >-
+      A borrower complains that the mortgage assistant told them their escrow shortage
+      would be spread over 12 months, but their statement demanded a lump sum. The
+      complaints team asks engineering what happened. Logs are split across five services
+      with no shared id; the retrieved documents, the prompt version and the model version
+      can't be determined.
+    analogy: >-
+      An aircraft with no flight recorder. After an incident, everyone has a theory.
+    breaks:
+      - One answer spans query rewrite, retrieval, two LLM calls and a servicing API.
+      - Each service logs separately, with no correlation id.
+      - Prompts and retrieved content weren't recorded.
+    root_cause: >-
+      No end-to-end tracing with LLM-specific detail.
+    where: Instrumentation.
+    fix:
+      - Distributed tracing (OpenTelemetry plus an LLM tracing backend such as Langfuse, LangSmith or Arize Phoenix) with spans for every step.
+      - Record rendered prompt, retrieved document ids, tool inputs and outputs, model and prompt versions per span (with redaction).
+      - Show the trace id in the complaint system so any answer can be replayed.
+    detect:
+      - Percentage of production answers with a complete trace.
+    tradeoff: >-
+      Storing full traces costs money and raises privacy risk; redact and set retention.
+    variant: >-
+      Telco: a customer disputes what the bot said about a device trade-in value, and
+      the carrier can't show what the bot saw.
+    line: Every answer should be replayable from its trace.
+    related: [tel-07, tel-19, obs-03]
+    diagram:
+      bad_label: "Anti-pattern: separate logs, no trace id"
+      good_label: "Fix: end-to-end trace with prompts, docs, versions"
+      bad: [["Complaint", "Escrow answer"], ["5 services", "Separate logs"], ["No trace id", "No prompt"], ["Unknown cause", "Can't replay"]]
+      good: [["OTel spans", "Every step"], ["Record", "Prompt, doc ids"], ["Versions", "Model, prompt"], ["Replay", "From trace id"]]
+
+  - id: obs-03
+    title: Two thousand thumbs-down clicks with no trace
+    domain: telco
+    severity: medium
+    tags: [feedback, triage, data flywheel]
+    scenario: >-
+      A carrier's app assistant collects thumbs-up and thumbs-down. After a quarter,
+      there are 2,000 negative votes in an analytics table, keyed only by timestamp and app
+      session. None can be linked to the specific answer, prompt or retrieved content, so
+      none can be turned into fixes or eval cases.
+    analogy: >-
+      A suggestion box full of notes that say "this was bad" with no indication of what
+      "this" was.
+    breaks:
+      - Feedback and traces live in different systems with no shared key.
+      - Triage is impossible without the context.
+      - The best source of eval cases is wasted.
+    root_cause: >-
+      Feedback events don't carry the trace id.
+    where: Instrumentation and data model.
+    fix:
+      - Return a trace id with every response and attach it to feedback events.
+      - Build a triage queue of negative-feedback traces, reviewed weekly.
+      - Turn confirmed failures into eval cases.
+    detect:
+      - Share of feedback events linked to a trace.
+    tradeoff: >-
+      Few users leave feedback; combine explicit votes with implicit signals (rephrasing,
+      escalation).
+    variant: >-
+      FinTech: a bank's thumbs-down data can't be tied to the answer that caused it, so
+      complaints about wrong fee information go unfixed.
+    line: Feedback is only useful when it points to a trace.
+    related: [tel-13, eval-05]
+    diagram:
+      bad_label: "Anti-pattern: feedback stored without a trace id"
+      good_label: "Fix: trace id on feedback, triage queue, eval cases"
+      bad: [["Thumbs down", "2,000 votes"], ["Timestamp only", "No trace id"], ["No context", "Can't triage"], ["Wasted", "No fixes"]]
+      good: [["Trace id", "On response"], ["On feedback", "Same id"], ["Triage queue", "Weekly"], ["Eval cases", "From failures"]]
+
+  - id: obs-04
+    title: Average latency hides 40-second dispute answers
+    domain: fintech
+    severity: medium
+    tags: [tail latency, p99, slo]
+    scenario: >-
+      A card issuer's dispute assistant averages 2.1 seconds per answer, well within its
+      target. But 5% of customers, mostly those with several disputed transactions, wait
+      over 40 seconds, and many abandon the chat and call. The team only charts the mean.
+    analogy: >-
+      A bus company saying the average wait is 5 minutes, ignoring the stop where people
+      wait an hour.
+    breaks:
+      - LLM latency has a long tail (long outputs, retries, multi-tool runs).
+      - Means smooth over the tail.
+      - Alerts never fire.
+    root_cause: >-
+      Mean-based dashboards and alerts.
+    where: Metrics and SLOs.
+    fix:
+      - Track and alert on p95 and p99, time to first token and per-step latency.
+      - Track output token length distributions, which drive the tail.
+      - Break down latency by intent and complexity (number of transactions).
+    detect:
+      - SLO on p95 latency per intent, with an error budget.
+    tradeoff: >-
+      Percentiles need histogram metrics, which cost a bit more to store.
+    variant: >-
+      Telco: a bill-explanation bot's average looks fine, but multi-line family accounts
+      wait 30+ seconds.
+    line: Users experience the tail, not the mean.
+    related: [tel-08, rag-18]
+    diagram:
+      bad_label: "Anti-pattern: alert on average latency"
+      good_label: "Fix: p95/p99, TTFT and per-step latency by intent"
+      bad: [["Avg 2.1 s", "Looks fine"], ["5% wait 40 s", "Multi-dispute"], ["Mean only", "Charted"], ["Abandon", "Then call"]]
+      good: [["p95 / p99", "Alerting"], ["TTFT", "First token"], ["Per step", "Breakdown"], ["By intent", "SLO budget"]]
+
+  - id: obs-05
+    title: One MVNO tenant burns the monthly LLM budget in a week
+    domain: telco
+    severity: high
+    tags: [cost metering, tenants, quotas]
+    scenario: >-
+      A carrier offers its AI care assistant to MVNO partners as a white-label service.
+      One MVNO integrates it into an automated workflow that calls it in a loop. The
+      carrier only sees cost on the provider's monthly invoice. By then the MVNO has used
+      $60k of tokens, against a $15k monthly budget for all tenants.
+    analogy: >-
+      A shared office phone with no per-desk billing. You find out who called abroad when
+      the bill arrives.
+    breaks:
+      - Cost is tracked from the invoice, not in real time.
+      - No per-tenant quotas or attribution.
+      - Automated misuse is invisible until month end.
+    root_cause: >-
+      No cost observability at the request level.
+    where: Gateway and metering.
+    fix:
+      - Meter tokens and cost per request, feature, tenant and user, in real time, via an LLM gateway.
+      - Set per-tenant quotas and rate limits, with budget alerts at 50%, 80% and 100%.
+      - Bill or charge back tenants from the same meter.
+    detect:
+      - Daily cost per tenant against forecast; anomaly detection on call rates.
+    tradeoff: >-
+      Hard quotas can block legitimate peaks; use soft limits with alerts plus hard caps.
+    variant: >-
+      FinTech: a bank's API partner in an embedded-finance programme triggers runaway
+      calls to the bank's AI document checker.
+    line: Tokens are money, so meter them like money.
+    related: [cost-07, tel-04, ops-07]
+    diagram:
+      bad_label: "Anti-pattern: cost visible only on the invoice"
+      good_label: "Fix: real-time metering and quotas per tenant"
+      bad: [["MVNO tenant", "Loops calls"], ["No metering", "Per tenant"], ["Monthly bill", "Only view"], ["$60k used", "Vs $15k budget"]]
+      good: [["Gateway meter", "Per request"], ["Tenant quota", "Rate limits"], ["Budget alerts", "50/80/100%"], ["Chargeback", "Same meter"]]
+
+  - id: obs-06
+    title: Tax-season questions drift outside what the bot knows
+    domain: fintech
+    severity: medium
+    tags: [drift, input monitoring, clustering]
+    scenario: >-
+      A bank's assistant was built around everyday banking. Each January to April, questions
+      about tax forms (1099-INT, corrected forms, mortgage interest statements) rise to 20%
+      of traffic. Answer quality drops, but nobody sees it, because outputs are not
+      monitored by topic and the overall score is averaged over the year.
+    analogy: >-
+      A shop that doesn't notice its customers have changed from tourists to locals and
+      keeps stocking postcards.
+    breaks:
+      - Input mix shifts with seasons, product launches and events.
+      - No baseline for topics or retrieval scores.
+      - Annual averages hide seasonal problems.
+    root_cause: >-
+      No drift detection on inputs or retrieval.
+    where: Monitoring.
+    fix:
+      - Cluster query embeddings and track cluster shares against a baseline; alert on new or growing clusters.
+      - Track retrieval-score distributions and abstain rates per cluster.
+      - Pre-load seasonal content and eval cases before known seasons.
+    detect:
+      - Weekly drift report of new topic clusters.
+    tradeoff: >-
+      Clustering produces noise; review the top movers only.
+    variant: >-
+      Telco: each September, a new flagship phone launch shifts traffic to trade-in and
+      pre-order questions.
+    line: Watch the inputs, not just the outputs.
+    related: [eval-05, obs-09]
+    diagram:
+      bad_label: "Anti-pattern: static dashboards, no input baseline"
+      good_label: "Fix: topic clusters and score distributions vs baseline"
+      bad: [["Jan-Apr", "Tax questions"], ["20% of traffic", "New topic"], ["Annual average", "Hides it"], ["Quality drops", "Unseen"]]
+      good: [["Cluster inputs", "Embeddings"], ["Baseline", "Cluster shares"], ["Alert", "New clusters"], ["Pre-load", "Seasonal content"]]
+
+  - id: obs-07
+    title: Nobody can explain why the agent cancelled a line
+    domain: telco
+    severity: high
+    tags: [audit trail, decision tracing, agents]
+    scenario: >-
+      A carrier's care agent cancels a business customer's secondary line. The customer
+      says they asked to cancel an add-on, not the line. The tool-call log shows
+      cancel_subscription with the line id, but not what the agent saw or why it chose that
+      tool. The carrier can't defend or explain the decision.
+    analogy: >-
+      A bank teller's till log that shows a withdrawal but not the slip the customer signed.
+    breaks:
+      - Tool calls are logged without inputs, reasoning or context.
+      - Customer instructions and the agent's interpretation are lost.
+      - Compliance and complaint handling need the decision path.
+    root_cause: >-
+      Action logging without decision context.
+    where: Tracing and audit logging.
+    fix:
+      - Record per step the model input (redacted), the model's stated plan or rationale where available, the tool chosen, arguments and result.
+      - Keep an immutable audit log for every write action, linked to the conversation and customer confirmation.
+      - Require explicit confirmation for destructive actions and record it.
+    detect:
+      - Audit completeness checks on write actions.
+    tradeoff: >-
+      Detailed audit logs are sensitive data; restrict access and set retention.
+    variant: >-
+      FinTech: a bank agent closes a savings account and the bank cannot show what the
+      customer asked for.
+    line: For agents, the audit trail is a product requirement.
+    related: [gov-07, aev-12]
+    diagram:
+      bad_label: "Anti-pattern: tool calls logged without context"
+      good_label: "Fix: decision trace and immutable audit for writes"
+      bad: [["'Cancel add-on'", "Customer"], ["cancel_sub", "Line cancelled"], ["Log: call only", "No context"], ["Can't explain", "Complaint"]]
+      good: [["Step trace", "Input, plan"], ["Tool + args", "Recorded"], ["Confirmation", "Captured"], ["Audit log", "Immutable"]]
+
+  - id: obs-08
+    title: Forty dashboards and no SLO during an incident
+    domain: fintech
+    severity: medium
+    tags: [slo, error budget, ownership]
+    scenario: >-
+      A bank's AI platform has 40 dashboards for its assistants. During a quality incident
+      in the payments assistant, the on-call engineer cannot tell which metric defines
+      "broken", who owns it, or whether to roll back. The incident runs for 3 hours.
+    analogy: >-
+      A cockpit with every gauge but no red lines and no checklist.
+    breaks:
+      - Metrics without targets or owners.
+      - Too many signals, no hierarchy.
+      - No runbook links from alerts.
+    root_cause: >-
+      Dashboards built before SLOs.
+    where: Operating model.
+    fix:
+      - Define a few SLOs per assistant (availability, p95 latency, quality score, cost per task) with targets and error budgets.
+      - Assign owners, and link every alert to a runbook.
+      - Build one overview dashboard per SLO and drill-downs underneath.
+    detect:
+      - Mean time to detect and resolve for AI incidents.
+    tradeoff: >-
+      Quality SLOs are harder to define than latency; start with proxies and refine.
+    variant: >-
+      Telco: during a bot incident, the care operations team and the AI team argue
+      about which dashboard is right.
+    line: Define SLOs first, dashboards second.
+    related: [eval-20, obs-19]
+    diagram:
+      bad_label: "Anti-pattern: metric sprawl without SLOs"
+      good_label: "Fix: few SLOs with owners, budgets, runbooks"
+      bad: [["40 dashboards", "No targets"], ["Incident", "Payments bot"], ["Which metric?", "Who owns?"], ["3 hours", "To resolve"]]
+      good: [["SLOs", "4 per assistant"], ["Error budget", "Per SLO"], ["Owner", "Named"], ["Runbook", "From alert"]]
+
+  - id: obs-09
+    title: Team rewrites prompts while an index shard is empty
+    domain: telco
+    severity: medium
+    tags: [retrieval observability, zero results]
+    scenario: >-
+      Answer quality of a carrier's device-support bot drops sharply for Samsung and Pixel
+      questions. The team rewrites prompts for a week. The real cause was a failed reindex
+      that left the Android device-guide shard empty. Retrieval returned zero results, and
+      the model answered from memory.
+    analogy: >-
+      Repainting a shop's sign when the problem is that the shelves are empty.
+    breaks:
+      - Only the LLM call is observed.
+      - Retrieval returned zero or low-score results silently.
+      - The model filled the gap from training data.
+    root_cause: >-
+      No observability on retrieval.
+    where: Instrumentation.
+    fix:
+      - Log retrieved doc ids, scores and result counts per request.
+      - Alert on zero-result rate and on drops in top-score distributions per collection.
+      - Health-check each index shard (document count against expected).
+    detect:
+      - Zero-result and low-score rates by collection.
+    tradeoff: >-
+      Per-request retrieval logs add storage; aggregate them to metrics and keep samples.
+    variant: >-
+      FinTech: a bank's policy assistant degrades after a SharePoint permissions change
+      makes half the policy library invisible to the indexer.
+    line: Observe retrieval as closely as generation.
+    related: [rag-16, rag-05]
+    diagram:
+      bad_label: "Anti-pattern: observe only the LLM call"
+      good_label: "Fix: retrieval metrics and shard health checks"
+      bad: [["Android Qs", "Quality drop"], ["Shard empty", "Failed reindex"], ["Zero results", "Silent"], ["Prompt rewrites", "A week"]]
+      good: [["Log docs", "Ids, scores"], ["Zero-result", "Alert"], ["Shard check", "Doc counts"], ["Root cause", "Same day"]]
+
+  - id: obs-10
+    title: PII filter blocks 15% of legitimate account questions
+    domain: fintech
+    severity: medium
+    tags: [guardrail monitoring, false positives]
+    scenario: >-
+      A bank adds an input PII filter to its assistant. It starts blocking any message with
+      a long number, including "my last payment of 1250 to account ending 4471". For a
+      week, 15% of legitimate questions get "I can't help with that" before anyone notices.
+    analogy: >-
+      A bouncer told to stop anyone suspicious who ends up turning away regular customers,
+      and no one counts how many.
+    breaks:
+      - Guardrails run silently with no metrics.
+      - False positives look like normal refusals.
+      - Changes to guardrail rules aren't monitored.
+    root_cause: >-
+      Guardrails are not observed like models.
+    where: Guardrail instrumentation.
+    fix:
+      - Emit block rate per guardrail and rule, by intent.
+      - Sample blocked items for human review and measure false-positive rate.
+      - Alert on sudden changes, and deploy guardrail changes with canaries.
+    detect:
+      - Block rate trends and reviewed false-positive rate.
+    tradeoff: >-
+      Reviewing blocked content may involve sensitive data; use restricted access.
+    variant: >-
+      Telco: a toxicity filter blocks customers describing a "dead line" or "killed
+      signal".
+    line: Monitor your guardrails like any other model.
+    related: [sec-11, obs-14]
+    diagram:
+      bad_label: "Anti-pattern: guardrails run silently"
+      good_label: "Fix: block-rate metrics, review samples, canary changes"
+      bad: [["PII filter", "Added"], ["Blocks numbers", "Any long one"], ["15% blocked", "Legit questions"], ["A week", "Unnoticed"]]
+      good: [["Block rate", "Per rule"], ["Sample review", "False positives"], ["Alert", "Sudden change"], ["Canary", "Rule changes"]]
+
+  - id: obs-11
+    title: Quality dip that can't be split by prompt version
+    domain: telco
+    severity: medium
+    tags: [versioning, cohorts, attribution]
+    scenario: >-
+      A carrier ships a new prompt to 50% of traffic on Tuesday and an index refresh on
+      Wednesday. Quality dips Thursday. Traces carry no prompt or index version tags, so
+      the team can't compare cohorts and rolls back both changes.
+    analogy: >-
+      Changing two ingredients in a recipe at once without writing down which batch had
+      which.
+    breaks:
+      - Traces lack version metadata.
+      - Changes overlap in time.
+      - Attribution is guesswork.
+    root_cause: >-
+      No version tags on telemetry.
+    where: Instrumentation.
+    fix:
+      - Tag every trace with prompt version, model version, index version, tool versions and feature-flag assignments.
+      - Compare metrics by cohort side by side.
+      - Avoid overlapping releases on the same assistant, or use flags to separate them.
+    detect:
+      - Cohort comparison dashboard per release.
+    tradeoff: >-
+      More tags means more cardinality; put versions on traces and logs, not on high-
+      volume metrics labels.
+    variant: >-
+      FinTech: a bank can't tell if a fraud-summary regression came from a model upgrade
+      or a new data field.
+    line: Version tags turn a mystery into a diff.
+    related: [tel-10, ops-01]
+    diagram:
+      bad_label: "Anti-pattern: traces without version tags"
+      good_label: "Fix: tag prompt, model, index, flags; compare cohorts"
+      bad: [["Tue: prompt", "50% traffic"], ["Wed: index", "Refreshed"], ["Thu: dip", "No tags"], ["Roll back all", "Guesswork"]]
+      good: [["Version tags", "On traces"], ["Flags", "Recorded"], ["Cohorts", "Side by side"], ["Diff", "Root cause"]]
+
+  - id: obs-12
+    title: Payday 429s blamed on application bugs
+    domain: fintech
+    severity: medium
+    tags: [rate limits, provider health, capacity]
+    scenario: >-
+      A neobank sees random assistant failures on the 1st and 15th of each month. Engineers
+      spend weeks debugging the app. The real cause is provider 429 rate-limit responses
+      at payday peaks, retried without backoff, which made things worse.
+    analogy: >-
+      Blaming the car for slow traffic during rush hour.
+    breaks:
+      - Provider responses (429, 5xx) are not monitored separately.
+      - Retries without backoff amplify the problem.
+      - Capacity is not planned for known peaks.
+    root_cause: >-
+      The model provider is an unobserved dependency.
+    where: Gateway metrics and capacity planning.
+    fix:
+      - Monitor 429 and 5xx rates per provider and model, retry counts, queue depth and tokens-per-minute headroom.
+      - Retry with exponential backoff and jitter, and shed low-priority traffic first.
+      - Plan quota or provisioned throughput for known peaks.
+    detect:
+      - Headroom dashboard against provider limits.
+    tradeoff: >-
+      Provisioned throughput costs more; use it for peak windows only if possible.
+    variant: >-
+      Telco: chatbot failures every bill-run day are traced to provider rate limits.
+    line: Your provider is a dependency, so observe it.
+    related: [ops-17, agf-16]
+    diagram:
+      bad_label: "Anti-pattern: provider limits not monitored"
+      good_label: "Fix: provider health metrics, backoff, peak capacity"
+      bad: [["Payday peaks", "1st and 15th"], ["429s", "From provider"], ["Retry storm", "No backoff"], ["Blamed app", "Weeks lost"]]
+      good: [["429/5xx rate", "Per provider"], ["Headroom", "TPM vs limit"], ["Backoff", "Plus jitter"], ["Peak quota", "Planned"]]
+
+  - id: obs-13
+    title: Every reply looks fine but customers abandon long chats
+    domain: telco
+    severity: medium
+    tags: [session metrics, conversation quality]
+    scenario: >-
+      A carrier's per-message quality scores are high. Yet 35% of chats longer than 8
+      turns end in abandonment. Session review shows the bot asking for the same
+      information twice, and looping between two help articles.
+    analogy: >-
+      Rating every sentence of a phone call as polite while the caller still couldn't get
+      their problem solved.
+    breaks:
+      - Observability is per request.
+      - Conversational failures (loops, repetition, forgetting) appear only across turns.
+      - Nobody reviews whole sessions.
+    root_cause: >-
+      No session-level metrics.
+    where: Analytics and review.
+    fix:
+      - Track turns to resolution, repeated questions, repeated article suggestions, sentiment trend and abandonment per session.
+      - Review full sessions, not single turns, in quality sampling.
+      - Alert on repetition patterns.
+    detect:
+      - Abandonment by session length, repetition rate.
+    tradeoff: >-
+      Session analysis needs stitching across channels and devices.
+    variant: >-
+      FinTech: a bank chatbot loops between "reset password" and "unlock account"
+      articles for locked-out users.
+    line: Customers judge conversations, not single replies.
+    related: [aev-20, obs-03]
+    diagram:
+      bad_label: "Anti-pattern: per-message metrics only"
+      good_label: "Fix: session metrics and full-session review"
+      bad: [["Per-reply score", "High"], ["Long chats", "8+ turns"], ["Loops", "Repeat asks"], ["35% abandon", "Unseen"]]
+      good: [["Session metrics", "Turns, repeats"], ["Sentiment trend", "Over turns"], ["Session review", "Sampled"], ["Repeat alert", "Patterns"]]
+
+  - id: obs-14
+    title: Silent fallback to a weaker model for three days
+    domain: fintech
+    severity: medium
+    tags: [fallbacks, degradation, alerts]
+    scenario: >-
+      A bank's gateway falls back to a smaller model when the primary times out. A
+      network misconfiguration causes timeouts on 60% of requests for three days. The
+      fallback handles them quietly. Quality of loan-FAQ answers drops measurably and
+      nobody knows why until a weekly review.
+    analogy: >-
+      A spare tyre that works so quietly you drive on it for a month.
+    breaks:
+      - Resilience features hide degradation.
+      - Fallbacks emit no metric.
+      - Quality monitoring isn't split by which model answered.
+    root_cause: >-
+      Fallbacks without telemetry.
+    where: Gateway instrumentation.
+    fix:
+      - Emit a metric and trace attribute for every fallback, retry and degraded-mode response.
+      - Alert when fallback rate exceeds baseline.
+      - Split quality metrics by serving model.
+    detect:
+      - Fallback rate dashboard and alert.
+    tradeoff: >-
+      None significant; it's a few counters.
+    variant: >-
+      Telco: a care bot silently falls back to a menu flow for a week after an API key
+      expired.
+    line: Every fallback should leave a footprint.
+    related: [agf-16, obs-10]
+    diagram:
+      bad_label: "Anti-pattern: fallbacks with no telemetry"
+      good_label: "Fix: fallback metric, alert, quality by model"
+      bad: [["Timeouts", "60% requests"], ["Fallback model", "Quietly"], ["Quality drop", "3 days"], ["Found weekly", "Too late"]]
+      good: [["Fallback metric", "Every one"], ["Alert", "Above baseline"], ["Quality split", "By model"], ["Fix root", "Same day"]]
+
+  - id: obs-15
+    title: Diagnosis agent repeats the same check 200 times overnight
+    domain: telco
+    severity: high
+    tags: [runaway detection, kill switch]
+    scenario: >-
+      A NOC assistant agent investigating a cell-site alarm repeats the same KPI query 200
+      times overnight because the KPI API returns an empty result for a decommissioned
+      site. The cost is $900 and the KPI API team sees load spikes.
+    analogy: >-
+      A burglar alarm that keeps ringing all night because nobody set it to alert the
+      owner.
+    breaks:
+      - No live view of agent step counts or repetition.
+      - Loops are cheap per step and expensive in total.
+      - No kill switch.
+    root_cause: >-
+      Runaway agents are not detected in real time.
+    where: Runtime monitoring.
+    fix:
+      - Real-time alerts on steps per run, repeated tool-argument pairs and run duration outliers.
+      - Automatic kill switch on thresholds, with a summary to on-call.
+      - Combine with in-loop caps (see agf-02).
+    detect:
+      - Live runs dashboard with step and cost counters.
+    tradeoff: >-
+      Tight thresholds may kill legitimate long runs; tune per agent.
+    variant: >-
+      FinTech: a sanctions-screening agent re-screens the same name variant thousands of
+      times.
+    line: Detect loops in minutes, not on the invoice.
+    related: [agf-02, cost-07]
+    diagram:
+      bad_label: "Anti-pattern: no live view of agent runs"
+      good_label: "Fix: live step/repeat alerts and a kill switch"
+      bad: [["Site alarm", "Agent starts"], ["Empty KPI", "Retired site"], ["200 repeats", "Overnight"], ["$900 + load", "Found later"]]
+      good: [["Live counters", "Steps, cost"], ["Repeat alert", "Same args"], ["Kill switch", "Automatic"], ["On-call note", "Summary"]]
+
+  - id: obs-16
+    title: Traces redacted so heavily that nothing can be debugged
+    domain: fintech
+    severity: medium
+    tags: [redaction, pci, access control]
+    scenario: >-
+      To meet PCI DSS and privacy rules, a card issuer replaces every number and name in
+      traces with "[REDACTED]". When the dispute assistant misreads transaction amounts,
+      engineers see "Customer disputes [REDACTED] at [REDACTED] for [REDACTED]" and can't
+      debug.
+    analogy: >-
+      Blacking out every word of a document to keep it safe, then wondering why nobody can
+      use it.
+    breaks:
+      - All-or-nothing redaction removes debugging value.
+      - Amounts and merchants aren't sensitive in the same way as card numbers.
+      - No controlled access path exists for real investigations.
+    root_cause: >-
+      Redaction designed without considering debugging needs.
+    where: Telemetry pipeline and access policy.
+    fix:
+      - Redact field by field (mask PAN to last 4, tokenise names, keep amounts, dates and merchant categories).
+      - Keep raw traces in a restricted store with short retention and role-based access.
+      - Provide audited break-glass access for incidents.
+    detect:
+      - Share of incidents closed with a known root cause.
+    tradeoff: >-
+      Restricted raw stores add compliance scope; keep them minimal and audited.
+    variant: >-
+      Telco: traces redact all phone numbers and addresses, making porting and
+      serviceability bugs impossible to reproduce.
+    line: Redact precisely, not bluntly.
+    related: [tel-02, tel-15]
+    diagram:
+      bad_label: "Anti-pattern: redact everything"
+      good_label: "Fix: field-level redaction plus audited raw access"
+      bad: [["PCI concern", "Traces"], ["All redacted", "Every number"], ["Amount bug", "Can't see"], ["Undebuggable", "Incidents"]]
+      good: [["Mask PAN", "Last 4"], ["Keep amounts", "Dates, MCC"], ["Raw store", "Restricted"], ["Break-glass", "Audited"]]
+
+  - id: obs-17
+    title: Every failure logged as "LLM error"
+    domain: telco
+    severity: medium
+    tags: [failure taxonomy, prioritization]
+    scenario: >-
+      A carrier's AI team reports "2.3% LLM errors" each week. Nobody knows what those are.
+      When they finally classify a sample, they find timeouts, refusals, wrong plan prices,
+      format errors and tool failures, each needing a different fix and owner.
+    analogy: >-
+      A hospital that records every visit as "illness".
+    breaks:
+      - No classification of failure modes.
+      - Different root causes are counted together.
+      - Prioritisation is impossible.
+    root_cause: >-
+      No failure taxonomy.
+    where: Logging and analytics.
+    fix:
+      - Define a taxonomy (retrieval miss, hallucination, refusal, format error, tool failure, timeout, policy violation, wrong action).
+      - Classify automatically where possible (error codes, schema checks, judges) and manually on samples.
+      - Track trends per category with owners.
+    detect:
+      - Category share over time, by intent.
+    tradeoff: >-
+      Taxonomies need upkeep as systems change.
+    variant: >-
+      FinTech: a bank lumps fraud-assistant errors together and misses that most are
+      timeouts from one vendor.
+    line: Name your failure modes, then count them.
+    related: [aev-10, aev-17]
+    diagram:
+      bad_label: "Anti-pattern: one 'LLM error' bucket"
+      good_label: "Fix: failure taxonomy with owners and trends"
+      bad: [["2.3% errors", "Weekly"], ["One bucket", "'LLM error'"], ["Mixed causes", "Unknown"], ["No priority", "No owner"]]
+      good: [["Taxonomy", "8 categories"], ["Auto-classify", "Codes, schemas"], ["Sample review", "Manual"], ["Owner + trend", "Per category"]]
+
+  - id: obs-18
+    title: Online judge on 100% of traffic costs more than the product
+    domain: fintech
+    severity: medium
+    tags: [online evaluation, sampling, cost]
+    scenario: >-
+      A wealth platform runs a large-model judge inline on every assistant answer to check
+      faithfulness. It doubles latency and costs more than the assistant itself. Finance
+      asks for the assistant to be shut down.
+    analogy: >-
+      Hiring a second chef to taste every dish before it leaves the kitchen.
+    breaks:
+      - Expensive evaluation on every request.
+      - Inline evaluation adds user-visible latency.
+      - Most answers are low risk.
+    root_cause: >-
+      No sampling strategy for online evaluation.
+    where: Online eval design.
+    fix:
+      - Sample 1-10% for judge evaluation, asynchronously, after the response.
+      - Oversample risky intents, negative feedback and new versions.
+      - Run cheap deterministic checks (amounts, schema, banned phrases) inline on 100%.
+    detect:
+      - Eval cost as a share of serving cost.
+    tradeoff: >-
+      Sampling can miss rare failures; that is why risky slices are oversampled.
+    variant: >-
+      Telco: a care bot runs a judge on every answer during peak and breaches its
+      latency SLO.
+    line: Sample smart, judge asynchronously.
+    related: [obs-01, cost-01]
+    diagram:
+      bad_label: "Anti-pattern: inline judge on every request"
+      good_label: "Fix: async sampled judging plus cheap inline checks"
+      bad: [["Every answer", "Judged inline"], ["2x latency", "User sees"], ["Cost > product", "Judge"], ["Shutdown ask", "From finance"]]
+      good: [["Sample 1-10%", "Async"], ["Oversample", "Risky slices"], ["Inline rules", "100% cheap"], ["Cost share", "Tracked"]]
+
+  - id: obs-19
+    title: Bot promises outage credits and nobody knows how to stop it
+    domain: telco
+    severity: high
+    tags: [incident response, kill switch, runbooks]
+    scenario: >-
+      After a major outage, a carrier's bot starts telling customers they will receive a
+      $50 credit, a figure it pulled from an old press release. The team debates for 2
+      hours whether to roll back the prompt, disable the intent or switch off the bot,
+      while thousands more customers get the promise.
+    analogy: >-
+      A building with fire extinguishers but no evacuation plan.
+    breaks:
+      - Incident process was designed for outages, not wrong answers.
+      - No kill switch per intent.
+      - No pre-agreed decision rights.
+    root_cause: >-
+      No LLM-specific incident runbooks.
+    where: Operations.
+    fix:
+      - Write runbooks for quality incidents (disable intent, force handoff, roll back prompt or index, add a blocking rule).
+      - Build kill switches and feature flags per intent and per tool.
+      - Pre-agree who can pull them, and practise in game days.
+    detect:
+      - Time from detection to mitigation for quality incidents.
+    tradeoff: >-
+      Disabling intents shifts load to care; that's acceptable during an incident.
+    variant: >-
+      FinTech: a bank bot tells customers a fee will be refunded during an incident, and
+      nobody has authority to switch it off quickly.
+    line: Plan the rollback before you need it.
+    related: [obs-08, cicd-09]
+    diagram:
+      bad_label: "Anti-pattern: outage-only incident process"
+      good_label: "Fix: quality runbooks with kill switches per intent"
+      bad: [["Bot promises", "$50 credit"], ["Old release", "Source"], ["2-hour debate", "No runbook"], ["More promises", "Thousands"]]
+      good: [["Runbook", "Quality incident"], ["Kill switch", "Per intent"], ["Decision owner", "Pre-agreed"], ["Game days", "Practised"]]
+
+  - id: obs-20
+    title: First-week incident with no data to debug
+    domain: fintech
+    severity: high
+    tags: [launch readiness, instrumentation]
+    scenario: >-
+      A credit union launches a member assistant with "tracing to be added in phase 2".
+      In week one, members report wrong loan-rate answers. With no traces, cost data or
+      feedback capture, the team cannot reproduce the issue and takes the assistant
+      offline.
+    analogy: >-
+      Opening a restaurant and installing the smoke alarms after the first fire.
+    breaks:
+      - Instrumentation was deferred.
+      - Traces can't be captured retroactively.
+      - The launch had no observability exit criteria.
+    root_cause: >-
+      Observability treated as a later phase.
+    where: Launch checklist.
+    fix:
+      - Make tracing, cost metering, feedback capture and quality sampling launch requirements.
+      - Build them into the prototype, so they're tested before launch.
+      - Run a pre-launch "can we debug this?" drill.
+    detect:
+      - Launch checklist sign-off.
+    tradeoff: >-
+      Slightly slower first launch, much faster everything after.
+    variant: >-
+      Telco: a new store-associate copilot launches without traces and a pricing issue
+      can't be diagnosed.
+    line: Instrument before you launch, not after the first incident.
+    related: [obs-02, cicd-15]
+    diagram:
+      bad_label: "Anti-pattern: tracing in phase 2"
+      good_label: "Fix: observability as a launch requirement"
+      bad: [["Launch", "No tracing"], ["Wrong rates", "Week one"], ["No data", "Can't reproduce"], ["Taken offline", "Lost trust"]]
+      good: [["Prototype", "Has tracing"], ["Metering", "Cost, feedback"], ["Debug drill", "Pre-launch"], ["Checklist", "Signed off"]]

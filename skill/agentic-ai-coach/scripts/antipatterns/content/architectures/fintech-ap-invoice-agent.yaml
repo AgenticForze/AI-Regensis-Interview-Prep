@@ -1,0 +1,30 @@
+title: Accounts-payable agent
+domain: fintech
+summary: Agent that reads the AP inbox, updates vendor master data and schedules payments.
+scenario: >-
+  A company's accounts-payable agent reads the AP inbox, matches invoices to purchase
+  orders, updates vendor records (including bank details) when suppliers email changes,
+  and schedules payments through the bank's API, using a shared admin service account.
+lanes:
+  - name: Inputs
+    nodes:
+      - {id: inbox, title: AP inbox, sub: Supplier emails, type: channel, attrs: {untrusted_content: true}}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: AP agent, sub: Match + pay, type: agent, attrs: {budget: true}}
+      - {id: s2, title: "", type: spacer}
+  - name: Tools
+    nodes:
+      - {id: match, title: Match invoice, sub: PO 3-way match, type: tool_read}
+      - {id: vendor, title: Update vendor, sub: Bank details, type: tool_write, attrs: {irreversible: true, shared_admin_credentials: true}}
+      - {id: pay, title: Schedule pay, sub: Bank API, type: tool_payment, attrs: {irreversible: true, shared_admin_credentials: true}}
+  - name: Systems of record
+    nodes:
+      - {id: erp, title: ERP, sub: Vendor master, type: system_of_record}
+      - {id: bank, title: Bank, sub: Payments API, type: system_of_record}
+edges:
+  - {from: inbox, to: agent}
+  - {from: vendor, to: erp}
+  - {from: pay, to: bank}
+bus: {from: agent, to: [match, vendor, pay]}

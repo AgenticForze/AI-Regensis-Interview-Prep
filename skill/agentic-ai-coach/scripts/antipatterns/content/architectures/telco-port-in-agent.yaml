@@ -1,0 +1,31 @@
+title: Number port-in agent
+domain: telco
+summary: Agent that validates and submits mobile number port-in requests to the losing carrier.
+scenario: >-
+  An agent handles mobile number port-in requests: it collects the account number and
+  port-out PIN from the customer, checks portability, submits the port request through a
+  legacy number-portability gateway, schedules activation and texts the customer.
+lanes:
+  - name: Channel
+    nodes:
+      - {id: channel, title: App + store, sub: Port-in request, type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: Port-in agent, sub: ReAct loop, type: agent}
+      - {id: s2, title: "", type: spacer}
+  - name: Tools
+    nodes:
+      - {id: check, title: Portability, sub: Number check, type: tool_read}
+      - {id: submit, title: Submit port, sub: NP gateway, type: tool_provision, attrs: {irreversible: true, legacy: true}}
+      - {id: activate, title: Activate line, sub: Schedule, type: tool_provision}
+      - {id: notify, title: Notify, sub: SMS to new SIM, type: tool_notify}
+  - name: Systems of record
+    nodes:
+      - {id: np, title: Portability gateway, sub: Inter-carrier, type: system_of_record, attrs: {legacy: true}}
+      - {id: oss, title: Provisioning, sub: HSS + inventory, type: system_of_record}
+edges:
+  - {from: channel, to: agent}
+  - {from: submit, to: np}
+  - {from: activate, to: oss}
+bus: {from: agent, to: [check, submit, activate, notify]}

@@ -1,0 +1,29 @@
+title: Wealth advisor copilot
+domain: fintech
+summary: Advisor copilot with client memory, research retrieval and a code tool for portfolio analytics.
+scenario: >-
+  A wealth firm's advisor copilot prepares client reviews. It remembers client goals in a
+  shared memory, retrieves research and client notes, and writes and runs Python to
+  analyse portfolios. Advisors review its suggestions before client meetings.
+lanes:
+  - name: Channel
+    nodes:
+      - {id: channel, title: Advisor desktop, sub: Review prep, type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: Advisor copilot, sub: Drafts reviews, type: agent, attrs: {budget: true}}
+      - {id: memory, title: Client memory, sub: "Goals, notes", type: memory}
+  - name: Knowledge and tools
+    nodes:
+      - {id: research, title: Research search, sub: Notes + reports, type: retriever}
+      - {id: code, title: Analytics code, sub: Python, type: tool_code}
+      - {id: holdings, title: Holdings, sub: Portfolio data, type: tool_read}
+  - name: Systems of record
+    nodes:
+      - {id: crm, title: CRM + custody, sub: "Clients, holdings", type: system_of_record}
+edges:
+  - {from: channel, to: agent}
+  - {from: agent, to: memory, two_way: true}
+  - {from: holdings, to: crm}
+bus: {from: agent, to: [research, code, holdings]}

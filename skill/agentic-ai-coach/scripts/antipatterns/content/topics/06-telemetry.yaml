@@ -1,0 +1,760 @@
+id: telemetry
+order: 6
+prefix: tel
+title: Telemetry
+summary: >-
+  Telemetry is the data pipeline under observability: what you emit, in which schema,
+  at what cost, and under which privacy rules. In Telco (CPNI) and FinTech (PCI DSS,
+  GLBA, GDPR) prompts are customer data, so the telemetry pipeline inherits the same
+  security, retention and residency obligations as the systems of record.
+scenarios:
+  - id: tel-01
+    title: Switching trace vendors means rewriting 30 services
+    domain: fintech
+    severity: medium
+    tags: [opentelemetry, vendor lock-in, genai conventions]
+    scenario: >-
+      A bank instrumented its AI services with one observability vendor's proprietary SDK.
+      Procurement moves to a different vendor for cost reasons. Every service calls the old
+      SDK directly, so migrating means changing instrumentation in 30 services and losing
+      historical comparability.
+    analogy: >-
+      Wiring every room of a house with a plug type only one supplier makes.
+    breaks:
+      - Instrumentation is tied to one backend's API.
+      - Span names and attributes are vendor-specific.
+      - Migration becomes a multi-quarter project.
+    root_cause: >-
+      No vendor-neutral instrumentation standard.
+    where: Instrumentation layer.
+    fix:
+      - Instrument with OpenTelemetry and the GenAI semantic conventions (gen_ai.request.model, gen_ai.usage.input_tokens, gen_ai.usage.output_tokens and related attributes).
+      - Route through the OpenTelemetry Collector, so changing backends is a config change.
+      - Wrap LLM and tool calls in a shared internal library that sets attributes consistently.
+    detect:
+      - Share of services emitting OTel-conformant GenAI spans.
+    tradeoff: >-
+      Some vendor-specific features need extra attributes; keep them in the shared library.
+    variant: >-
+      Telco: a carrier's AI care stack is locked into an APM vendor whose contract is not
+      renewed after a merger.
+    line: Instrument once with OpenTelemetry, export anywhere.
+    related: [tel-04, obs-02]
+    diagram:
+      bad_label: "Anti-pattern: vendor SDK calls in every service"
+      good_label: "Fix: OpenTelemetry GenAI conventions plus collector"
+      bad: [["30 services", "Vendor SDK"], ["Vendor switch", "Procurement"], ["Rewrite all", "Instrumentation"], ["History lost", "No comparison"]]
+      good: [["OTel SDK", "GenAI attrs"], ["Shared library", "Consistent"], ["Collector", "Routing"], ["New backend", "Config change"]]
+
+  - id: tel-02
+    title: Customer addresses and call records found in the logging platform
+    domain: telco
+    severity: critical
+    tags: [pii, cpni, redaction, logging]
+    scenario: >-
+      A carrier's care bot logs full prompts and completions to its central logging
+      platform, which 600 engineers can search. A privacy audit finds customer addresses,
+      account PINs and call-detail summaries (CPNI) in logs retained for 13 months.
+    analogy: >-
+      Photocopying every customer's file and leaving the copies in the staff kitchen.
+    breaks:
+      - Prompts contain customer data by design.
+      - Logs are widely accessible and long-retained.
+      - Nobody classified telemetry as a data store.
+    root_cause: >-
+      Content capture on by default, with no redaction or access policy.
+    where: Telemetry pipeline.
+    fix:
+      - Detect and redact PII before export (Microsoft Presidio or a similar library at the collector), and never log PINs or secrets.
+      - Make content capture opt-in per environment and per field.
+      - Store sensitive content in a restricted, short-retention store with audited access.
+    detect:
+      - Scheduled PII scans of log indexes; access audit reports.
+    tradeoff: >-
+      Redaction removes some debugging context; keep tokenised identifiers to stitch
+      traces.
+    variant: >-
+      FinTech: a bank finds full card numbers and SSNs in assistant logs, putting the
+      logging platform in PCI scope.
+    line: Prompts are customer data, so treat logs as a data store.
+    related: [obs-16, sec-06, data-07]
+    diagram:
+      bad_label: "Anti-pattern: full prompts logged by default"
+      good_label: "Fix: redact at the collector, restricted content store"
+      bad: [["Full prompts", "Logged"], ["Addresses, PINs", "CPNI"], ["600 engineers", "Can search"], ["13 months", "Retention"]]
+      good: [["Redact", "At collector"], ["Opt-in content", "Per env"], ["Restricted store", "Short retention"], ["Audited access", "Break-glass"]]
+
+  - id: tel-03
+    title: Account ID as a metric label explodes the metrics bill
+    domain: fintech
+    severity: medium
+    tags: [cardinality, metrics, cost]
+    scenario: >-
+      A bank's engineers add account_id and session_id as labels on assistant latency and
+      token metrics so they can filter by customer. Active time series grow from 40,000 to
+      30 million. The metrics bill rises tenfold and dashboards time out.
+    analogy: >-
+      Creating a separate filing cabinet for every customer instead of one cabinet with
+      folders.
+    breaks:
+      - Each unique label combination creates a new time series.
+      - Account and session ids are unbounded.
+      - Metrics backends aren't built for per-entity data.
+    root_cause: >-
+      High-cardinality identifiers on metrics.
+    where: Metrics design.
+    fix:
+      - Keep metric labels low-cardinality (model, feature, intent, tenant tier, status).
+      - Put per-customer and per-session detail on traces and structured logs.
+      - Enforce label allow-lists in the shared instrumentation library and the collector.
+    detect:
+      - Active series count alerts per metric.
+    tradeoff: >-
+      Per-customer questions need a trace or log query, which is slower than a metric.
+    variant: >-
+      Telco: engineers add MSISDN as a label on bot metrics and the metrics cluster falls
+      over.
+    line: Metrics for aggregates, traces for individuals.
+    related: [tel-18, tel-14]
+    diagram:
+      bad_label: "Anti-pattern: account and session ids as labels"
+      good_label: "Fix: low-cardinality labels, ids on traces"
+      bad: [["Add labels", "account_id"], ["Series", "40k to 30M"], ["Bill x10", "Metrics"], ["Dashboards", "Time out"]]
+      good: [["Labels", "Model, intent"], ["Ids on traces", "And logs"], ["Allow-list", "In collector"], ["Series alert", "Per metric"]]
+
+  - id: tel-04
+    title: Three teams report token usage three different ways
+    domain: telco
+    severity: medium
+    tags: [schema, cost, standardization]
+    scenario: >-
+      A carrier's care, sales and network teams each log LLM usage. One logs "tokens"
+      (input plus output), one logs only output, one logs characters. Finance cannot
+      reconcile internal reports with the provider's invoice, and chargebacks to business
+      units are disputed.
+    analogy: >-
+      Three branches measuring sales in dollars, euros and "units", then adding them up.
+    breaks:
+      - No shared schema for usage and cost.
+      - Cached and reasoning tokens are priced differently and often missing.
+      - Aggregation produces nonsense.
+    root_cause: >-
+      Ad-hoc usage fields per team.
+    where: Shared instrumentation and gateway.
+    fix:
+      - Define a shared usage schema (input, output, cached and reasoning tokens, model, provider, cost in USD, feature, tenant, business unit).
+      - Populate it in one place, the LLM gateway or shared client library, from provider usage fields.
+      - Reconcile monthly against invoices.
+    detect:
+      - Variance between internal cost totals and invoices.
+    tradeoff: >-
+      Teams must migrate to the shared client; make it the easiest path.
+    variant: >-
+      FinTech: a bank's chargeback model for AI usage collapses because divisions report
+      usage inconsistently.
+    line: Standardise the schema before you build the dashboard.
+    related: [tel-12, obs-05]
+    diagram:
+      bad_label: "Anti-pattern: ad-hoc usage fields per team"
+      good_label: "Fix: one usage schema populated at the gateway"
+      bad: [["Care: tokens", "In + out"], ["Sales: output", "Only"], ["Network: chars", "Characters"], ["No reconcile", "Invoice"]]
+      good: [["Schema", "In/out/cached"], ["Gateway", "Fills it"], ["Cost USD", "Per BU"], ["Monthly", "Reconcile"]]
+
+  - id: tel-05
+    title: The 1% trace sample contains almost no failed disputes
+    domain: fintech
+    severity: medium
+    tags: [tail sampling, trace sampling]
+    scenario: >-
+      To control cost, a card issuer samples 1% of traces at the start of each request. The
+      dispute assistant fails on about 0.5% of requests. In a week of traffic, the trace
+      store holds 3 failed traces, too few to diagnose a new failure pattern.
+    analogy: >-
+      Keeping one in a hundred security-camera clips at random, and then finding the
+      robbery wasn't recorded.
+    breaks:
+      - Head sampling decides before the outcome is known.
+      - Failures are rare, so random samples rarely contain them.
+      - The interesting traces are thrown away.
+    root_cause: >-
+      Sampling strategy ignores outcomes.
+    where: Collector configuration.
+    fix:
+      - Use tail-based sampling at the collector, keeping 100% of errors, slow requests, negative feedback, guardrail hits and escalations.
+      - Keep a small random baseline (1%) for unbiased statistics.
+      - Raise sampling temporarily for new releases.
+    detect:
+      - Count of retained failure traces per day.
+    tradeoff: >-
+      Tail sampling needs collectors that buffer whole traces, which costs memory.
+    variant: >-
+      Telco: random sampling of the care bot's traces misses almost all port-in failures.
+    line: Sample after you know whether the request was interesting.
+    related: [obs-18]
+    diagram:
+      bad_label: "Anti-pattern: random 1% head sampling"
+      good_label: "Fix: tail sampling keeps every interesting trace"
+      bad: [["1% sampled", "At start"], ["0.5% fail", "Rare"], ["3 failures", "Kept per week"], ["Can't diagnose", "Too few"]]
+      good: [["Tail sampling", "At collector"], ["Keep 100%", "Errors, slow"], ["Plus feedback", "And guardrails"], ["1% baseline", "Random"]]
+
+  - id: tel-06
+    title: Slow tracing backend slows down customer replies
+    domain: telco
+    severity: high
+    tags: [async export, resilience, critical path]
+    scenario: >-
+      A carrier's tracing backend has a bad day and responds slowly. The care bot's trace
+      exporter sends spans synchronously, so every customer reply waits for it. Median
+      latency goes from 1.5 to 7 seconds, and the bot breaches its SLO because of its own
+      monitoring.
+    analogy: >-
+      A shop that can't serve customers while the security camera is buffering.
+    breaks:
+      - Spans and logs are exported synchronously on the request path.
+      - Telemetry backends have their own outages.
+      - No buffer or drop policy.
+    root_cause: >-
+      Telemetry is a hard dependency of the product.
+    where: Exporter configuration.
+    fix:
+      - Use async, batched exporters and a local collector agent.
+      - Bound buffers and drop telemetry rather than blocking requests.
+      - Alert on dropped-span counts.
+    detect:
+      - Exporter latency and dropped spans as metrics.
+    tradeoff: >-
+      Dropping telemetry loses data during backend outages; that's the right trade.
+    variant: >-
+      FinTech: a payments assistant times out because the logging service's TLS handshake
+      is slow.
+    line: Telemetry must never take down the thing it watches.
+    related: [tel-07]
+    diagram:
+      bad_label: "Anti-pattern: synchronous span export"
+      good_label: "Fix: async batched export, drop instead of block"
+      bad: [["Trace backend", "Slow"], ["Sync export", "On request"], ["1.5 s to 7 s", "Median"], ["SLO breach", "Self-inflicted"]]
+      good: [["Async batch", "Exporter"], ["Local agent", "Collector"], ["Bounded buffer", "Drop if full"], ["Drop metric", "Alerted"]]
+
+  - id: tel-07
+    title: Traces stop at the Kafka topic between fraud scoring and the agent
+    domain: fintech
+    severity: medium
+    tags: [context propagation, async, queues]
+    scenario: >-
+      A bank's fraud pipeline publishes high-risk transactions to Kafka. A customer-contact
+      agent consumes them and contacts the customer. Traces stop at the producer; the
+      agent's spans start a new trace. When a customer complains about a confusing
+      fraud-alert message, nobody can connect it to the scoring decision.
+    analogy: >-
+      A relay race where each runner starts their own stopwatch, so no one knows the team's
+      total time.
+    breaks:
+      - Trace context isn't propagated in message headers.
+      - Async hops, sub-agents and tools break the trace.
+      - Root-cause analysis across systems fails.
+    root_cause: >-
+      Broken context propagation across asynchronous boundaries.
+    where: Instrumentation of queues and agents.
+    fix:
+      - Propagate W3C trace context in Kafka headers and in tool and sub-agent calls.
+      - Use span links for fan-out and fan-in.
+      - Test propagation in integration tests.
+    detect:
+      - Share of agent traces with a parent span from the upstream system.
+    tradeoff: >-
+      Very long-lived traces can be awkward in some backends; use links rather than one
+      giant trace.
+    variant: >-
+      Telco: an order event goes through a message bus to a provisioning agent and the
+      trace breaks at the bus.
+    line: A trace is only as complete as its weakest hop.
+    related: [obs-02, tel-11]
+    diagram:
+      bad_label: "Anti-pattern: no trace context across the queue"
+      good_label: "Fix: W3C context in headers, span links"
+      bad: [["Fraud score", "Trace A"], ["Kafka topic", "No context"], ["Agent", "Trace B"], ["Can't link", "Complaint"]]
+      good: [["traceparent", "In headers"], ["Agent span", "Child of A"], ["Span links", "Fan-out"], ["Test", "Propagation"]]
+
+  - id: tel-08
+    title: Voice bot feels slow, but total latency looks fine
+    domain: telco
+    severity: medium
+    tags: [time to first token, streaming, voice]
+    scenario: >-
+      A carrier's IVR voice bot answers in 2.8 seconds on average, which looks acceptable.
+      Callers say it feels slow and talk over it. The metric measured total response time.
+      Time to first audio was 2.6 seconds, because speech synthesis waited for the full
+      LLM response before starting.
+    analogy: >-
+      A waiter who brings every dish at once after an hour, versus one who brings the first
+      course in five minutes.
+    breaks:
+      - Only total duration was measured.
+      - Perceived speed depends on the first token and first audio.
+      - The pipeline waited instead of streaming.
+    root_cause: >-
+      Telemetry didn't capture the user-experience timing.
+    where: Instrumentation and pipeline design.
+    fix:
+      - Emit time to first token, time to first audio, tokens per second and total duration as separate metrics.
+      - Stream tokens into speech synthesis by sentence.
+      - Set SLOs on time to first audio for voice (for example under 1 second).
+    detect:
+      - Barge-in rate (callers talking over the bot) by latency band.
+    tradeoff: >-
+      Streaming makes post-generation guardrails harder; run fast checks per sentence.
+    variant: >-
+      FinTech: a bank's voice assistant waits for the full answer before speaking card
+      balance information.
+    line: For streaming, time to first token is the UX metric.
+    related: [obs-04, cost-03]
+    diagram:
+      bad_label: "Anti-pattern: measure total duration only"
+      good_label: "Fix: time to first token/audio, stream to TTS"
+      bad: [["Avg 2.8 s", "Total time"], ["First audio", "2.6 s"], ["TTS waits", "Full reply"], ["Callers", "Talk over bot"]]
+      good: [["TTFT metric", "Separate"], ["First audio", "SLO under 1 s"], ["Stream TTS", "By sentence"], ["Barge-in", "Tracked"]]
+
+  - id: tel-09
+    title: GDPR deletion request no one can fulfil in the trace store
+    domain: fintech
+    severity: high
+    tags: [retention, gdpr, right to erasure]
+    scenario: >-
+      A European neobank receives a right-to-erasure request. Customer data has been
+      deleted from core systems, but three years of assistant traces and conversation logs
+      remain in the observability platform, not indexed by customer. The DPO can't confirm
+      deletion within the legal deadline.
+    analogy: >-
+      Moving house but leaving copies of your letters in every room of the old one.
+    breaks:
+      - No retention policy for telemetry.
+      - Traces aren't indexed by customer identity.
+      - Deletion processes ignore observability stores.
+    root_cause: >-
+      Retention and deletion were not designed for telemetry.
+    where: Data governance for telemetry.
+    fix:
+      - Tier retention (raw content 30 days, redacted traces 90 days, aggregates for years).
+      - Tag traces with a pseudonymous customer key so per-customer deletion is possible.
+      - Include telemetry stores in the data-subject request process and records of processing.
+    detect:
+      - Age of the oldest raw-content record; DSR completion time.
+    tradeoff: >-
+      Short retention limits long-term analysis; keep redacted aggregates for that.
+    variant: >-
+      Telco: an EU operator can't erase a subscriber's chatbot conversations because they
+      sit in an unindexed log archive.
+    line: Retention is a design decision, not a default.
+    related: [data-07, gov-09]
+    diagram:
+      bad_label: "Anti-pattern: keep all telemetry forever"
+      good_label: "Fix: tiered retention and per-customer deletion"
+      bad: [["Erasure ask", "GDPR"], ["Core deleted", "Systems"], ["3 years traces", "Unindexed"], ["Can't confirm", "Deadline"]]
+      good: [["Raw 30 days", "Content"], ["Redacted 90", "Traces"], ["Customer key", "Pseudonymous"], ["DSR process", "Includes telemetry"]]
+
+  - id: tel-10
+    title: Which prompt produced last Tuesday's bad answer?
+    domain: telco
+    severity: medium
+    tags: [resource attributes, versions, attribution]
+    scenario: >-
+      A carrier's care team escalates a bad bot answer from last Tuesday. The trace has the
+      prompt text but not the prompt version, model version, index version or experiment
+      arm. Three prompt versions were live that day.
+    analogy: >-
+      A photo with no date or camera settings when you're trying to work out why it's
+      blurry.
+    breaks:
+      - Spans lack deployment metadata.
+      - Several versions run at once (A/B, canary).
+      - Attribution needs the variables that changed.
+    root_cause: >-
+      Missing version attributes in telemetry.
+    where: Instrumentation.
+    fix:
+      - Add resource attributes (service version, region) and span attributes (prompt id and version, model version, index version, flags and experiment arms).
+      - Set them centrally in the shared library from the release manifest.
+    detect:
+      - Share of spans with complete version attributes.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: a bank can't tell which model version produced a disputed credit-limit
+      explanation.
+    line: Stamp every span with what was deployed.
+    related: [obs-11, ops-01]
+    diagram:
+      bad_label: "Anti-pattern: spans with no deployment metadata"
+      good_label: "Fix: version attributes from the release manifest"
+      bad: [["Bad answer", "Last Tuesday"], ["3 prompts live", "A/B + canary"], ["No version", "On span"], ["Unknown", "Which one"]]
+      good: [["Manifest", "Release"], ["Span attrs", "Prompt, model"], ["Index + flags", "Recorded"], ["Attributed", "Instantly"]]
+
+  - id: tel-11
+    title: A 12-second gap in the trace is an uninstrumented bureau call
+    domain: fintech
+    severity: medium
+    tags: [tool spans, coverage]
+    scenario: >-
+      A lender's application assistant has slow responses. The trace shows two LLM spans
+      with a 12-second gap between them. Only LLM calls emit spans; the gap turns out to be
+      a credit-bureau call that retries three times on timeout.
+    analogy: >-
+      A delivery tracker that shows "left depot" and "delivered" and nothing about the
+      four-hour stop in between.
+    breaks:
+      - Only LLM calls are instrumented.
+      - Tool and API latency and failures are invisible.
+      - Time is misattributed to the model.
+    root_cause: >-
+      Incomplete span coverage.
+    where: Instrumentation.
+    fix:
+      - Emit spans for every tool call, retrieval, database query and external API, with (redacted) arguments, status, retries and result size.
+      - Auto-instrument HTTP clients and DB drivers.
+    detect:
+      - Unaccounted time per trace (root duration minus child spans).
+    tradeoff: >-
+      More spans cost more; sample by trace, not by span.
+    variant: >-
+      Telco: the gap is a slow serviceability check against a legacy OSS system.
+    line: No gaps in the trace.
+    related: [tel-07, obs-02]
+    diagram:
+      bad_label: "Anti-pattern: only LLM calls emit spans"
+      good_label: "Fix: spans for every tool and external call"
+      bad: [["LLM span", "1.1 s"], ["Gap", "12 s unknown"], ["LLM span", "0.9 s"], ["Blames model", "Wrong cause"]]
+      good: [["Tool spans", "Every call"], ["Bureau call", "3 retries seen"], ["Auto-instrument", "HTTP, DB"], ["Gap metric", "Unaccounted"]]
+
+  - id: tel-12
+    title: Cost estimates 15% off the provider bill
+    domain: telco
+    severity: low
+    tags: [tokenizer, usage, billing]
+    scenario: >-
+      A carrier's AI team estimates token usage with a generic tokenizer and a fixed price
+      per token. Its cost dashboard is consistently 15% below the provider invoice,
+      because the model tokenises differently and cached and reasoning tokens are priced
+      differently.
+    analogy: >-
+      Estimating your phone bill from a stopwatch instead of the carrier's call records.
+    breaks:
+      - Client-side token counts differ from provider counts.
+      - Pricing differs by token type.
+      - Estimates drift as models change.
+    root_cause: >-
+      Estimated usage instead of provider-reported usage.
+    where: Usage capture.
+    fix:
+      - Record the usage numbers returned by the provider API on every response.
+      - Maintain a versioned price table per model and token type.
+      - Reconcile with billing monthly.
+    detect:
+      - Internal versus invoice variance.
+    tradeoff: >-
+      Streaming responses report usage at the end; handle interrupted streams.
+    variant: >-
+      FinTech: a bank's per-team chargeback is wrong because it counts characters, not
+      provider tokens.
+    line: Use the provider's usage numbers as the source of truth.
+    related: [tel-04]
+    diagram:
+      bad_label: "Anti-pattern: estimate tokens client-side"
+      good_label: "Fix: record provider usage, versioned prices"
+      bad: [["Generic", "Tokenizer"], ["Flat price", "Per token"], ["15% low", "Vs invoice"], ["Wrong budget", "Forecasts"]]
+      good: [["API usage", "Per response"], ["Token types", "Cached, reasoning"], ["Price table", "Versioned"], ["Reconcile", "Monthly"]]
+
+  - id: tel-13
+    title: Support tickets are the only quality signal
+    domain: fintech
+    severity: medium
+    tags: [implicit feedback, events]
+    scenario: >-
+      A bank learns about assistant quality problems from complaints weeks later. The app
+      already knows when a user rephrases the same question, copies an answer, abandons, or
+      taps "talk to an agent", but none of this is emitted as telemetry.
+    analogy: >-
+      A shop that only learns customers are unhappy from formal complaints, while ignoring
+      people putting items back and walking out.
+    breaks:
+      - No in-product feedback events.
+      - Implicit signals are available but discarded.
+      - Feedback isn't tied to traces.
+    root_cause: >-
+      Feedback telemetry was never designed.
+    where: Product analytics and instrumentation.
+    fix:
+      - Emit explicit feedback (thumbs, ratings) and implicit events (rephrase, retry, copy, abandon, escalate) with the trace id.
+      - Build quality indicators from them per intent.
+    detect:
+      - Implicit-dissatisfaction rate per intent and version.
+    tradeoff: >-
+      Implicit signals are noisy; use them as triage signals, not ground truth.
+    variant: >-
+      Telco: a carrier ignores that customers retype "speak to a human" in 20% of billing
+      chats.
+    line: Implicit feedback is free telemetry.
+    related: [obs-03]
+    diagram:
+      bad_label: "Anti-pattern: learn quality from complaints"
+      good_label: "Fix: explicit and implicit feedback events with trace ids"
+      bad: [["Complaints", "Weeks later"], ["Rephrase", "Not captured"], ["Abandon", "Not captured"], ["Slow fixes", "No signal"]]
+      good: [["Thumbs", "Explicit"], ["Rephrase, copy", "Implicit"], ["Escalate", "Event"], ["Trace id", "On every event"]]
+
+  - id: tel-14
+    title: Finding failed refunds means regex over 500 GB of logs
+    domain: telco
+    severity: medium
+    tags: [structured logging, json logs]
+    scenario: >-
+      A carrier's agent logs lines like "Agent applied credit of 25 dollars to acct
+      123...". When finance asks how many credits failed last month, an engineer spends
+      two days writing regex over 500 GB of logs and still isn't sure the number is right.
+    analogy: >-
+      Keeping accounts as a diary instead of a ledger.
+    breaks:
+      - Logs are free-text sentences.
+      - Formats vary by developer and change over time.
+      - Queries are slow and unreliable.
+    root_cause: >-
+      Unstructured logging.
+    where: Logging practice.
+    fix:
+      - Emit structured JSON events with consistent keys (event, tool, status, amount, currency, account_ref, trace_id, span_id).
+      - Define an event schema for business actions.
+    detect:
+      - Share of logs that parse as structured events.
+    tradeoff: >-
+      Structured events are less readable raw; tooling handles that.
+    variant: >-
+      FinTech: a bank can't count fee reversals done by its agent without parsing prose
+      logs.
+    line: Log events, not sentences.
+    related: [tel-03]
+    diagram:
+      bad_label: "Anti-pattern: free-text log sentences"
+      good_label: "Fix: structured JSON events with a schema"
+      bad: [["'Applied credit'", "Prose log"], ["Formats vary", "By developer"], ["500 GB regex", "Two days"], ["Unsure count", "For finance"]]
+      good: [["JSON event", "credit_applied"], ["Keys", "Amount, status"], ["Trace ids", "Linked"], ["Query", "Seconds"]]
+
+  - id: tel-15
+    title: BaaS partner sees another partner's prompts in shared dashboards
+    domain: fintech
+    severity: critical
+    tags: [multi tenancy, isolation, access control]
+    scenario: >-
+      A banking-as-a-service provider offers an AI support assistant to several fintech
+      partners. Partner support engineers get access to a shared observability dashboard.
+      One partner's engineer can filter traces and see another partner's customers'
+      conversations.
+    analogy: >-
+      A shared mailroom where any tenant can open any other tenant's post.
+    breaks:
+      - Telemetry isn't scoped by tenant.
+      - Access control was designed for the product, not for telemetry.
+      - Telemetry contains customer content.
+    root_cause: >-
+      Multi-tenant telemetry without isolation.
+    where: Telemetry access control.
+    fix:
+      - Tag all telemetry with tenant id and enforce row-level access by tenant.
+      - Use separate stores for regulated or high-risk tenants, with data residency where required.
+      - Test isolation like any other security control.
+    detect:
+      - Access audits and cross-tenant query alerts.
+    tradeoff: >-
+      Per-tenant stores raise cost and operations; use them only where required.
+    variant: >-
+      Telco: an MVNO's staff see the host operator's other MVNO customers' chats in a
+      shared tool.
+    line: Telemetry inherits the data's security requirements.
+    related: [ctx-17, rag-06]
+    diagram:
+      bad_label: "Anti-pattern: one shared telemetry store, no tenant scope"
+      good_label: "Fix: tenant tags, row-level access, separate stores"
+      bad: [["Shared dash", "All partners"], ["No tenant scope", "Filters"], ["Other partner", "Visible"], ["Data breach", "Contract risk"]]
+      good: [["Tenant id", "On all data"], ["Row-level", "Access"], ["Separate store", "Regulated"], ["Isolation test", "Regular"]]
+
+  - id: tel-16
+    title: Eval results live only in CI logs
+    domain: telco
+    severity: medium
+    tags: [experiment tracking, quality history]
+    scenario: >-
+      A carrier's AI team runs evals on every release. Results print to CI logs that expire
+      after 30 days. When leadership asks how bot quality changed over the last 50
+      releases, nobody can answer, and a slow decline goes unnoticed.
+    analogy: >-
+      Weighing yourself every day and never writing the number down.
+    breaks:
+      - Eval results aren't stored as data.
+      - History is lost with CI log retention.
+      - Slow drift is invisible.
+    root_cause: >-
+      Eval results not treated as telemetry.
+    where: Eval pipeline.
+    fix:
+      - Push eval results as versioned records (release, prompt, model, metric, slice) to an experiment tracker or metrics store.
+      - Chart quality per release and slice.
+      - Alert on downward trends across releases.
+    detect:
+      - Presence of eval records for every release.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: a bank's model risk team can't evidence ongoing performance because eval
+      history wasn't kept.
+    line: Eval results are telemetry too.
+    related: [eval-20, cicd-01]
+    diagram:
+      bad_label: "Anti-pattern: eval output in expiring CI logs"
+      good_label: "Fix: eval results stored per release and charted"
+      bad: [["Evals run", "Every release"], ["CI logs", "30-day expiry"], ["50 releases", "No history"], ["Slow decline", "Unnoticed"]]
+      good: [["Eval records", "Versioned"], ["Tracker", "Or metrics store"], ["Chart", "Per release"], ["Trend alert", "Across releases"]]
+
+  - id: tel-17
+    title: Child spans appear to start before their parents
+    domain: fintech
+    severity: low
+    tags: [clock skew, timestamps]
+    scenario: >-
+      A bank's traces of the payments assistant show tool spans starting before the agent
+      span that called them, and latency breakdowns don't add up. Hosts in two data centres
+      have clock drift of up to 400 ms.
+    analogy: >-
+      Two referees with watches set differently arguing about when the goal was scored.
+    breaks:
+      - Distributed hosts have unsynchronised clocks.
+      - Timestamps from different hosts are compared.
+      - Analysis tools show impossible orderings.
+    root_cause: >-
+      Clock skew in distributed tracing.
+    where: Infrastructure and instrumentation.
+    fix:
+      - Sync clocks with NTP or PTP and monitor drift.
+      - Measure durations with monotonic clocks.
+      - Use collector-side skew correction where available.
+    detect:
+      - Count of traces with negative child offsets.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      Telco: traces between a cloud bot and on-prem BSS show impossible timings due to
+      drift on on-prem servers.
+    line: Durations from monotonic clocks, timestamps from synced clocks.
+    related: [tel-07]
+    diagram:
+      bad_label: "Anti-pattern: unsynchronised host clocks"
+      good_label: "Fix: NTP sync, monotonic durations, skew correction"
+      bad: [["Two DCs", "Clock drift"], ["400 ms skew", "Between hosts"], ["Child first", "Impossible"], ["Bad analysis", "Latency"]]
+      good: [["NTP/PTP", "Synced"], ["Monotonic", "Durations"], ["Skew fix", "At collector"], ["Drift alert", "Monitored"]]
+
+  - id: tel-18
+    title: Telemetry is 40% of infrastructure cost
+    domain: telco
+    severity: medium
+    tags: [cost, debug logging, budgets]
+    scenario: >-
+      A carrier's AI platform logs every prompt, completion and tool payload at debug level
+      in production, plus full traces at 100%. Telemetry becomes 40% of infrastructure
+      cost. An audit shows 90% of it is never queried.
+    analogy: >-
+      Recording every conversation in the building forever, in case one matters.
+    breaks:
+      - Debug-level logging in production.
+      - No sampling or aggregation.
+      - Nobody measures what's used.
+    root_cause: >-
+      Telemetry has no budget or value review.
+    where: Telemetry governance.
+    fix:
+      - Review query usage, and drop or aggregate unused data.
+      - Use log levels, tail sampling and collector-side aggregation.
+      - Set a telemetry budget as a share of serving cost.
+    detect:
+      - Telemetry cost per request; percentage of data queried.
+    tradeoff: >-
+      Cutting too much hurts debugging; keep high-value traces (errors, feedback) at 100%.
+    variant: >-
+      FinTech: a bank's AI observability bill exceeds its model bill.
+    line: Telemetry has a cost-to-value ratio. Manage it.
+    related: [tel-05, tel-03]
+    diagram:
+      bad_label: "Anti-pattern: debug everything, keep everything"
+      good_label: "Fix: levels, sampling, aggregation and a budget"
+      bad: [["Debug level", "In production"], ["100% traces", "Full payloads"], ["40% of infra", "Cost"], ["90% unused", "Never queried"]]
+      good: [["Usage review", "What's queried"], ["Tail sampling", "Keep failures"], ["Aggregate", "At collector"], ["Budget", "% of serving"]]
+
+  - id: tel-19
+    title: Logs show the template, not the prompt the model saw
+    domain: fintech
+    severity: medium
+    tags: [rendered prompts, debugging]
+    scenario: >-
+      A wealth assistant logs the prompt template id and variables. A complaint shows the
+      model ignored the client's risk profile. The template looks correct. The bug is in
+      context assembly: the risk-profile block was truncated when the portfolio was large.
+      Nobody can see it, because the rendered prompt wasn't captured.
+    analogy: >-
+      Checking the recipe when the cook used a page with a corner torn off.
+    breaks:
+      - Templates are logged, but rendered messages are not.
+      - Bugs live in substitution, truncation and ordering.
+      - The template review gives false confidence.
+    root_cause: >-
+      Missing capture of what the model actually received.
+    where: Instrumentation of the LLM call.
+    fix:
+      - Capture the final rendered messages and tool definitions per call (redacted, sampled as needed), with token counts per component.
+      - Record truncation events explicitly.
+    detect:
+      - Truncation rate per component; diff of rendered prompts across versions.
+    tradeoff: >-
+      Rendered prompts are large and sensitive; store them in the restricted content store.
+    variant: >-
+      Telco: a care bot ignores the customer's plan because the account-context block was
+      dropped when history was long.
+    line: Log what the model saw, not what you meant to send.
+    related: [ctx-19, ctx-08]
+    diagram:
+      bad_label: "Anti-pattern: log template id only"
+      good_label: "Fix: capture rendered messages and truncation events"
+      bad: [["Template", "Looks right"], ["Risk block", "Truncated"], ["Not logged", "Rendered prompt"], ["Ignored risk", "Complaint"]]
+      good: [["Rendered msgs", "Captured"], ["Tokens", "Per component"], ["Truncation", "Event logged"], ["Diff", "Across versions"]]
+
+  - id: tel-20
+    title: Bill explanations cut off mid-sentence for large accounts
+    domain: telco
+    severity: medium
+    tags: [stop reason, max tokens, metadata]
+    scenario: >-
+      Business customers with 40+ lines report that bill explanations stop mid-sentence.
+      Engineers suspect the model. The response metadata, which wasn't recorded, would have
+      shown finish_reason = max_tokens: the output limit was set to 500 tokens for all
+      accounts.
+    analogy: >-
+      A printer that stops mid-page because it ran out of paper, while you check the ink.
+    breaks:
+      - Response metadata (stop reason, filter flags, cache hits) is discarded.
+      - Truncation looks like a model failure.
+      - One limit applied to every account size.
+    root_cause: >-
+      Model-side metadata not recorded.
+    where: LLM call instrumentation.
+    fix:
+      - Record stop or finish reason, content-filter flags, cached-token counts and request parameters (temperature, max tokens).
+      - Alert on spikes in truncation.
+      - Size output limits by task (or summarise large accounts by group).
+    detect:
+      - Truncation rate by account size.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: corporate-card statement summaries truncate for large companies with many
+      cardholders.
+    line: The stop reason is the first thing to check.
+    related: [tel-19]
+    diagram:
+      bad_label: "Anti-pattern: discard response metadata"
+      good_label: "Fix: record stop reason and parameters, alert on truncation"
+      bad: [["40+ lines", "Business bill"], ["Cut off", "Mid-sentence"], ["Blame model", "Wrong guess"], ["max_tokens", "Was the cause"]]
+      good: [["Stop reason", "Recorded"], ["Params", "Max tokens, temp"], ["Spike alert", "Truncation"], ["Size limits", "By task"]]

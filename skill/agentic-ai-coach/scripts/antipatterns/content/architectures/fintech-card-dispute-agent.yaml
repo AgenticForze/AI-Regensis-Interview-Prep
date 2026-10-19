@@ -1,0 +1,30 @@
+title: Card dispute agent
+domain: fintech
+summary: Agent that takes card disputes, reads merchant evidence, issues provisional credit and drafts decisions.
+scenario: >-
+  A card issuer's agent takes dispute requests from cardholders, verifies them in the
+  app, reads evidence that merchants upload during chargebacks, issues provisional credit
+  where Reg E or Reg Z requires it, and drafts decisions for analysts, who see the agent's
+  summary in a review queue.
+lanes:
+  - name: Channel
+    nodes:
+      - {id: channel, title: App + chat, sub: Cardholder, type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: Dispute agent, sub: Intake + draft, type: agent, attrs: {budget: true}}
+      - {id: review, title: Analyst review, sub: Agent summary, type: human_approval}
+  - name: Knowledge and tools
+    nodes:
+      - {id: evidence, title: Evidence reader, sub: Merchant PDFs, type: retriever, attrs: {untrusted_content: true, acl_filter: true}}
+      - {id: verify, title: Verify user, sub: In-app passkey, type: tool_identity, attrs: {auth_strength: strong}}
+      - {id: credit, title: Provisional credit, sub: Card ledger, type: tool_payment}
+  - name: Systems of record
+    nodes:
+      - {id: card, title: Card platform, sub: Ledger + disputes, type: system_of_record}
+edges:
+  - {from: channel, to: agent}
+  - {from: agent, to: review, two_way: true}
+  - {from: credit, to: card}
+bus: {from: agent, to: [evidence, verify, credit]}

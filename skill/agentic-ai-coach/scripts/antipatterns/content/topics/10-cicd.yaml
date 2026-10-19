@@ -1,0 +1,767 @@
+id: cicd
+order: 10
+prefix: cicd
+title: CI/CD for Agentic AI
+summary: >-
+  An agentic system changes through code, prompts, models, indexes, tools and policies.
+  Every one of those is a deployable change that needs the same pipeline: tests, evals,
+  security checks, staged rollout, monitoring and one-click rollback. In regulated Telco
+  and FinTech environments, the pipeline is also your evidence for auditors.
+scenarios:
+  - id: cicd-01
+    title: Pipeline runs unit tests but no evals
+    domain: fintech
+    severity: high
+    tags: [eval gate, pipeline]
+    scenario: >-
+      A bank's AI assistant repository has a mature CI pipeline: linting, unit tests and
+      container scans. Evals are a separate notebook a data scientist runs before big
+      releases. A refactor of the retrieval code passes all unit tests and ships, but
+      cuts recall on mortgage questions by 20%.
+    analogy: >-
+      A car factory that checks every bolt is tight but never test-drives the car.
+    breaks:
+      - Unit tests check code behaviour, not answer quality.
+      - Evals sit outside the pipeline.
+      - Quality regressions pass every gate.
+    root_cause: >-
+      Evals aren't a pipeline stage.
+    where: CI pipeline.
+    fix:
+      - Add an eval stage (fast subset per PR, full suite on merge and nightly) with thresholds that block.
+      - Include retrieval metrics, task metrics, safety and format checks.
+      - Post eval diffs to the PR.
+    code:
+      lang: yaml
+      src: |
+        # .github/workflows/ci.yml (excerpt)
+        evals-fast:
+          needs: unit-tests
+          runs-on: ubuntu-latest
+          steps:
+            - uses: actions/checkout@v4
+            - run: python -m evals.run --suite pr --report eval-report.json
+            - run: python -m evals.gate --report eval-report.json --thresholds evals/thresholds.yaml
+    detect:
+      - Count of releases without an eval record.
+    tradeoff: >-
+      PR evals cost a few dollars and minutes per change.
+    variant: >-
+      Telco: a carrier's bot pipeline ships a tool-schema change that passes tests but
+      breaks plan-change task completion.
+    line: Evals are a pipeline stage, not a notebook.
+    related: [eval-15, cicd-04]
+    diagram:
+      bad_label: "Anti-pattern: unit tests only in CI"
+      good_label: "Fix: blocking eval stage with PR diffs"
+      bad: [["Refactor", "Retrieval"], ["Unit tests", "All pass"], ["No evals", "In CI"], ["Recall -20%", "Shipped"]]
+      good: [["Unit tests", "Code"], ["Fast evals", "Per PR"], ["Full suite", "On merge"], ["Gate", "Thresholds"]]
+
+  - id: cicd-02
+    title: Prompts edited live in a vendor console
+    domain: telco
+    severity: high
+    tags: [change control, prompts as code]
+    scenario: >-
+      A carrier's care bot runs on a conversational-AI platform where business users can
+      edit prompts in a web console, live. A marketing manager updates the greeting to
+      promote a new plan and accidentally deletes the instruction to verify identity
+      before discussing account details.
+    analogy: >-
+      Letting anyone edit the production database from a spreadsheet.
+    breaks:
+      - Prompt changes bypass review, tests and evals.
+      - No history or rollback.
+      - Security instructions are editable by anyone.
+    root_cause: >-
+      Prompts not managed as code.
+    where: Change control.
+    fix:
+      - Manage prompts as code (pull requests, review, evals, deployment through the pipeline).
+      - Separate business-editable content (greetings, promos) from safety-critical instructions, with different permissions.
+      - Enforce identity verification in the flow, not only in the prompt.
+    detect:
+      - Audit of prompt changes not linked to a PR.
+    tradeoff: >-
+      Business users lose instant edits; give them a fast-track review path.
+    variant: >-
+      FinTech: an operations user edits a bank bot's disclosure text directly in the
+      console, removing a required APR statement.
+    line: If it changes behaviour, it goes through the pipeline.
+    related: [prm-01, cicd-15]
+    diagram:
+      bad_label: "Anti-pattern: live prompt edits in a console"
+      good_label: "Fix: prompts as code, scoped edit rights"
+      bad: [["Console edit", "Live"], ["Promo update", "Greeting"], ["ID check gone", "Deleted"], ["Account info", "Unverified"]]
+      good: [["PR + review", "For prompts"], ["Evals", "On change"], ["Scoped rights", "Promo vs safety"], ["Flow check", "ID in code"]]
+
+  - id: cicd-03
+    title: Tool wrappers and templates have no unit tests
+    domain: fintech
+    severity: medium
+    tags: [unit tests, tools, templates]
+    scenario: >-
+      A wealth platform's agent has 15 tools wrapping internal APIs and a dozen prompt
+      templates. None has unit tests. A change to the portfolio tool's date handling ships
+      with an off-by-one-month bug, and performance reports show the wrong quarter.
+    analogy: >-
+      Testing a car by driving it, but never checking the speedometer on a bench.
+    breaks:
+      - Deterministic code around the model is untested.
+      - End-to-end evals are slow and noisy, so they miss small bugs.
+      - Bugs surface in production.
+    root_cause: >-
+      Treating the whole system as "AI" and skipping normal testing.
+    where: Test strategy.
+    fix:
+      - Unit-test tools, parsers, validators and template rendering like any other code.
+      - Use contract tests against API schemas.
+      - Keep evals for model behaviour, and unit tests for everything deterministic.
+    detect:
+      - Coverage of tool and template modules.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      Telco: an untested proration helper in a billing tool miscalculates partial months.
+    line: Most of an agent is ordinary code. Test it like ordinary code.
+    related: [prm-19, cicd-18]
+    diagram:
+      bad_label: "Anti-pattern: no unit tests around the model"
+      good_label: "Fix: unit and contract tests for tools and templates"
+      bad: [["15 tools", "Untested"], ["Date change", "Off by month"], ["Evals miss it", "Noisy"], ["Wrong quarter", "Reports"]]
+      good: [["Unit tests", "Tools, parsers"], ["Template tests", "Rendering"], ["Contract tests", "API schemas"], ["Evals", "Model behaviour"]]
+
+  - id: cicd-04
+    title: Two-hour eval suite on every PR gets skipped
+    domain: telco
+    severity: medium
+    tags: [tiered evals, speed]
+    scenario: >-
+      A carrier runs its full 3,000-case eval suite, including long agent tasks, on every
+      pull request. It takes two hours and costs $60. Engineers start adding [skip-evals]
+      to commit messages, and soon most PRs ship untested.
+    analogy: >-
+      An airport security line so slow that staff open a side door.
+    breaks:
+      - One suite for every purpose.
+      - Slow feedback leads to bypasses.
+      - Cost discourages running it.
+    root_cause: >-
+      No tiered eval strategy.
+    where: CI design.
+    fix:
+      - Tier evals (PR smoke under 5 minutes, merge suite under 30 minutes, nightly full suite including long tasks).
+      - Select PR evals by what changed (prompt for billing runs billing cases).
+      - Disallow skip flags on protected branches.
+    detect:
+      - Share of merged PRs with eval results.
+    tradeoff: >-
+      Smaller PR suites can miss rare regressions; nightly runs catch them.
+    variant: >-
+      FinTech: a bank's eval suite takes so long that releases are batched monthly,
+      slowing every fix.
+    line: Fast evals get run. Slow evals get skipped.
+    related: [cicd-01, cicd-10]
+    diagram:
+      bad_label: "Anti-pattern: full suite on every PR"
+      good_label: "Fix: tiered evals selected by change"
+      bad: [["3,000 cases", "Every PR"], ["2 hours", "$60 each"], ["[skip-evals]", "Added"], ["Untested", "Most PRs"]]
+      good: [["PR smoke", "Under 5 min"], ["Merge suite", "Under 30 min"], ["Nightly", "Full + long"], ["By change", "Selected"]]
+
+  - id: cicd-05
+    title: New prompt goes to all customers at once
+    domain: fintech
+    severity: high
+    tags: [canary, progressive delivery]
+    scenario: >-
+      A bank deploys a new prompt for its card-services assistant to 100% of traffic after
+      evals pass. A subtle change makes it ask for the full card number in some flows.
+      Within an hour, thousands of customers have typed their card numbers into chat,
+      creating a PCI incident.
+    analogy: >-
+      Launching a new recipe to every branch of a restaurant chain on the same day.
+    breaks:
+      - Evals didn't cover that flow.
+      - No canary limited exposure.
+      - No automated guard on a critical metric.
+    root_cause: >-
+      No progressive delivery for prompt changes.
+    where: Deployment.
+    fix:
+      - Deploy prompt and model changes behind flags to a canary (1-5%), compare with control, then ramp.
+      - Monitor critical guards (PAN patterns in input, refusal rate, escalations) with automatic rollback.
+      - Add an input filter that blocks and masks card numbers.
+    detect:
+      - Canary vs control comparison on guard metrics.
+    tradeoff: >-
+      Slower full rollout; much smaller blast radius.
+    variant: >-
+      Telco: a new prompt starts asking customers for their account PIN in chat, rolled
+      out to everyone at once.
+    line: Every change gets a canary.
+    related: [ops-06, cicd-16]
+    diagram:
+      bad_label: "Anti-pattern: 100% rollout after evals pass"
+      good_label: "Fix: canary with guard metrics and auto-rollback"
+      bad: [["New prompt", "Evals pass"], ["100% traffic", "At once"], ["Asks for PAN", "Some flows"], ["PCI incident", "1 hour"]]
+      good: [["Canary 2%", "Behind flag"], ["Guards", "PAN, refusals"], ["Auto-rollback", "On breach"], ["Ramp", "Then 100%"]]
+
+  - id: cicd-06
+    title: Model version bumped as a one-line config change
+    domain: telco
+    severity: high
+    tags: [model upgrades, change management]
+    scenario: >-
+      An engineer changes the model id in a carrier's config file to the provider's newer
+      version, calling it a "config tweak". The change skips the eval stage because only
+      code paths trigger evals. The new model formats plan comparisons differently and
+      breaks the app's rendering.
+    analogy: >-
+      Swapping an aircraft engine and calling it a paint job.
+    breaks:
+      - Model changes aren't recognised as behaviour changes.
+      - CI triggers only on code paths.
+      - Downstream consumers aren't tested.
+    root_cause: >-
+      Model upgrades not treated as releases.
+    where: CI triggers and change policy.
+    fix:
+      - Treat model, prompt, index, tool and guardrail config files as eval-triggering paths.
+      - Require full evals and a canary for model changes.
+      - Add rendering and contract tests for structured outputs consumed by apps.
+    detect:
+      - Config changes merged without eval runs.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: a bank swaps the embedding model in config and retrieval quality collapses
+      (see rag-07).
+    line: The model is a dependency. Upgrades are releases.
+    related: [eval-19, ops-16, rag-07]
+    diagram:
+      bad_label: "Anti-pattern: model id change skips evals"
+      good_label: "Fix: config paths trigger evals and canary"
+      bad: [["Model id", "Config edit"], ["No eval run", "Code-only rule"], ["New format", "Comparisons"], ["App breaks", "Rendering"]]
+      good: [["Config paths", "Trigger evals"], ["Full suite", "Model change"], ["Contract test", "App output"], ["Canary", "Then ramp"]]
+
+  - id: cicd-07
+    title: Same commit builds two different agents
+    domain: fintech
+    severity: medium
+    tags: [reproducible builds, lock files]
+    scenario: >-
+      A fintech's agent image is built with unpinned Python dependencies. Two builds of the
+      same commit, a day apart, pull different versions of an LLM SDK. One build retries
+      tool calls on 5xx; the other doesn't. A production incident can't be reproduced in
+      staging.
+    analogy: >-
+      Two cakes from the same recipe with ingredients from different suppliers.
+    breaks:
+      - Floating dependencies change between builds.
+      - Behaviour depends on library defaults.
+      - Images aren't immutable artifacts.
+    root_cause: >-
+      Non-reproducible builds.
+    where: Build pipeline.
+    fix:
+      - Use lock files with hashes, and build once.
+      - Promote the same immutable image (by digest) through environments.
+      - Record the image digest in the release manifest.
+    detect:
+      - Diff of dependency versions between environments.
+    tradeoff: >-
+      Updates need deliberate PRs.
+    variant: >-
+      Telco: staging and production run different SDK versions of the same agent build.
+    line: Build once, promote the same artifact.
+    related: [ops-13, ops-01]
+    diagram:
+      bad_label: "Anti-pattern: rebuild per environment, unpinned"
+      good_label: "Fix: lock files, one image promoted by digest"
+      bad: [["Same commit", "Two builds"], ["Different SDK", "Versions"], ["Retry differs", "Behaviour"], ["Can't repro", "Incident"]]
+      good: [["Lock + hashes", "Deps"], ["Build once", "Image"], ["Promote", "By digest"], ["Manifest", "Records digest"]]
+
+  - id: cicd-08
+    title: CI agent evals call the production BSS
+    domain: telco
+    severity: critical
+    tags: [test isolation, side effects]
+    scenario: >-
+      A carrier's CI pipeline runs agent evals with credentials that can reach production
+      BSS APIs "for realism". A test case for plan changes runs against a real employee's
+      test line that was mapped to a real customer account after a data refresh. The
+      customer's plan is changed.
+    analogy: >-
+      A fire drill that sets off the sprinklers in the real data centre.
+    breaks:
+      - CI credentials reach production write APIs.
+      - Test data mapping isn't controlled.
+      - Nothing prevents writes outside a sandbox.
+    root_cause: >-
+      No isolation between CI evals and production systems.
+    where: CI environment and credentials.
+    fix:
+      - Run agent evals against a sandbox BSS or recorded tool responses.
+      - Give CI no credentials for production systems, enforced by network policy.
+      - Seed synthetic customers and reset state per run.
+    detect:
+      - Alerts on any production API call from CI identities.
+    tradeoff: >-
+      Sandboxes drift; refresh them from recordings regularly.
+    variant: >-
+      FinTech: a payments agent eval initiates a real ACH transfer from CI.
+    line: CI should never be able to touch production.
+    related: [aev-04, aev-14]
+    diagram:
+      bad_label: "Anti-pattern: CI evals with production credentials"
+      good_label: "Fix: sandbox BSS, no prod creds, synthetic data"
+      bad: [["CI evals", "Prod creds"], ["Test line", "Mapped wrong"], ["Plan change", "Executed"], ["Real customer", "Affected"]]
+      good: [["Sandbox BSS", "Or recordings"], ["No prod creds", "Network policy"], ["Synthetic", "Customers"], ["Reset", "Per run"]]
+
+  - id: cicd-09
+    title: Rollback restores the code but not the index
+    domain: fintech
+    severity: high
+    tags: [rollback, index versioning]
+    scenario: >-
+      A bank releases a new assistant version along with a rebuilt policy index. Quality
+      drops, and the team rolls back the application. The rebuilt index stays in place
+      because indexes aren't part of the release, so quality stays bad for another day.
+    analogy: >-
+      Undoing a bad recipe change but keeping the spoiled ingredients.
+    breaks:
+      - Rollback covers code only.
+      - Prompts, indexes and configs have separate lifecycles.
+      - No single release unit.
+    root_cause: >-
+      Non-code components lack rollback.
+    where: Release and rollback design.
+    fix:
+      - Version indexes and prompts with aliases, and make them part of the release manifest.
+      - Roll back the whole manifest (code, prompt, model, index alias) in one action.
+      - Rehearse rollbacks.
+    detect:
+      - Time to full rollback in drills.
+    tradeoff: >-
+      Keeping old indexes costs storage for the rollback window.
+    variant: >-
+      Telco: a carrier rolls back its bot code, but the new prompt version stays in the
+      registry and remains live.
+    line: Roll back the whole bundle, not just the code.
+    related: [ops-01, obs-19]
+    diagram:
+      bad_label: "Anti-pattern: rollback restores only code"
+      good_label: "Fix: one-click rollback of the whole manifest"
+      bad: [["Release", "Code + index"], ["Quality drop", "Detected"], ["Code rollback", "Only"], ["Index stays", "Still bad"]]
+      good: [["Manifest", "Code, prompt"], ["Index alias", "Versioned"], ["Rollback all", "One action"], ["Drills", "Rehearsed"]]
+
+  - id: cicd-10
+    title: Flaky evals fixed with retry until green
+    domain: telco
+    severity: medium
+    tags: [flaky tests, nondeterminism, statistics]
+    scenario: >-
+      A carrier's eval stage fails intermittently because LLM outputs vary. The team
+      configures the CI job to retry up to three times until it passes. Real regressions
+      now pass on the second or third attempt.
+    analogy: >-
+      Re-taking a blood test until the result looks normal.
+    breaks:
+      - Nondeterminism is handled by retrying.
+      - Retries hide real regressions.
+      - Thresholds aren't statistical.
+    root_cause: >-
+      Treating LLM eval variance as test flakiness.
+    where: Eval gate design.
+    fix:
+      - Run multiple trials and gate on aggregate scores with confidence intervals.
+      - Separate deterministic checks (schema, safety rules) that must always pass from statistical quality checks.
+      - Lower variance with low temperature where appropriate.
+    detect:
+      - Variance of eval scores across runs; retry counts.
+    tradeoff: >-
+      More trials cost more; use them on the merge suite.
+    variant: >-
+      FinTech: a bank re-runs its compliance eval until it passes, missing a disclosure
+      regression.
+    line: Don't retry until green. Measure the distribution.
+    related: [eval-07, cicd-04]
+    diagram:
+      bad_label: "Anti-pattern: retry flaky evals until green"
+      good_label: "Fix: repeated trials, statistical gates"
+      bad: [["Evals flaky", "Variance"], ["Retry x3", "Until pass"], ["Regression", "Passes on 2nd"], ["Shipped", "Broken"]]
+      good: [["k trials", "Per case"], ["CI gate", "Aggregate + CI"], ["Hard checks", "Always pass"], ["Low temp", "Where fit"]]
+
+  - id: cicd-11
+    title: Knowledge articles published straight into the live index
+    domain: fintech
+    severity: medium
+    tags: [content pipeline, index changes]
+    scenario: >-
+      A bank's knowledge team publishes policy articles in the CMS, and a webhook indexes
+      them immediately. One article has a typo in the wire cut-off time (3 am instead of
+      3 pm). Within minutes the assistant tells customers international wires sent after
+      3 am will go next day.
+    analogy: >-
+      A newspaper that prints readers' letters on the front page without an editor.
+    breaks:
+      - Content changes bypass review and evals.
+      - The index is updated in place.
+      - Critical facts aren't validated.
+    root_cause: >-
+      Content updates outside the delivery pipeline.
+    where: Content and index pipeline.
+    fix:
+      - Route content changes through review and an automatic eval of affected intents before indexing.
+      - Validate critical facts (times, fees, rates) against systems of record or a facts registry.
+      - Index to a staging alias first, then promote.
+    detect:
+      - Diff of answers on golden questions after each content change.
+    tradeoff: >-
+      Slower publishing; use an expedited path for urgent fixes.
+    variant: >-
+      Telco: a care article with a wrong roaming price is indexed immediately and quoted
+      to customers.
+    line: Content is code for a RAG system.
+    related: [rag-05, data-03]
+    diagram:
+      bad_label: "Anti-pattern: CMS publishes straight to the live index"
+      good_label: "Fix: review, fact checks, staging alias, then promote"
+      bad: [["CMS publish", "Typo: 3 am"], ["Webhook", "Index now"], ["Live index", "Updated"], ["Wrong cut-off", "To customers"]]
+      good: [["Review", "Content PR"], ["Fact check", "Vs registry"], ["Staging alias", "Index first"], ["Evals pass", "Promote"]]
+
+  - id: cicd-12
+    title: Planner and executor agents never tested together
+    domain: telco
+    severity: medium
+    tags: [system tests, multi agent]
+    scenario: >-
+      A carrier's order-orchestration system has three agents (intake, planner, executor)
+      each in a separate repository with its own CI. Each passes its evals. After
+      independent releases, the planner emits a new step type the executor doesn't
+      recognise, and orders stall.
+    analogy: >-
+      Three bands rehearsing separately and meeting for the first time on stage.
+    breaks:
+      - Agents are tested in isolation.
+      - Interfaces between them aren't versioned.
+      - No integration stage.
+    root_cause: >-
+      No system-level tests for multi-agent releases.
+    where: CI for multi-agent systems.
+    fix:
+      - Version handoff schemas and run contract tests across repositories.
+      - Add an integration environment and end-to-end eval suite triggered by any agent release.
+      - Coordinate releases or require backwards compatibility.
+    detect:
+      - Schema validation errors between agents in production.
+    tradeoff: >-
+      Cross-repo testing slows independent releases.
+    variant: >-
+      FinTech: a bank's KYC agents (document, screening, decision) drift apart after
+      separate releases.
+    line: Test agents alone and together.
+    related: [aev-18, mas-03]
+    diagram:
+      bad_label: "Anti-pattern: each agent tested only in its own repo"
+      good_label: "Fix: versioned contracts and an end-to-end stage"
+      bad: [["3 repos", "3 pipelines"], ["All pass", "In isolation"], ["New step type", "From planner"], ["Orders stall", "Executor"]]
+      good: [["Schemas", "Versioned"], ["Contract tests", "Cross-repo"], ["E2E suite", "Any release"], ["Compatibility", "Required"]]
+
+  - id: cicd-13
+    title: No red-team stage in the release pipeline
+    domain: fintech
+    severity: high
+    tags: [security testing, prompt injection]
+    scenario: >-
+      A brokerage's agent passes functional evals and ships. A security researcher later
+      shows that a crafted message makes it reveal other customers' order notes. The red-team
+      tests that would have caught it existed, but were run manually once a year.
+    analogy: >-
+      Testing the bank vault's lock once a year while changing the vault weekly.
+    breaks:
+      - Security testing isn't automated.
+      - New prompts and tools change the attack surface.
+      - Annual tests are stale.
+    root_cause: >-
+      Red teaming outside the pipeline.
+    where: CI security stage.
+    fix:
+      - Add an automated adversarial suite (injection, jailbreaks, data exfiltration, tool misuse) to the merge pipeline.
+      - Block release on critical failures.
+      - Refresh attacks from research and incidents; keep annual manual red teaming too.
+    detect:
+      - Attack success rate per release.
+    tradeoff: >-
+      Adversarial suites need upkeep; share them across teams.
+    variant: >-
+      Telco: a care agent change lets customers query other subscribers' details, and no
+      automated test catches it.
+    line: Every release gets attacked before customers attack it.
+    related: [eval-10, sec-09]
+    diagram:
+      bad_label: "Anti-pattern: annual manual red teaming only"
+      good_label: "Fix: automated adversarial stage that blocks release"
+      bad: [["Functional", "Evals pass"], ["Ships", "Weekly"], ["Red team", "Once a year"], ["Data leak", "Found later"]]
+      good: [["Attack suite", "In pipeline"], ["Injection", "Exfiltration"], ["Block", "On critical"], ["Refresh", "New attacks"]]
+
+  - id: cicd-14
+    title: Provider API key printed in CI logs
+    domain: telco
+    severity: high
+    tags: [secrets, ci logs]
+    scenario: >-
+      A carrier's eval job prints the full request configuration for debugging, including
+      the provider API key. CI logs are visible to all engineers and contractors. The key
+      is used from outside the company within a week.
+    analogy: >-
+      Reading the office alarm code over the public address system.
+    breaks:
+      - Debug output includes secrets.
+      - CI logs are broadly accessible.
+      - Long-lived keys.
+    root_cause: >-
+      Secrets not masked in CI.
+    where: CI configuration.
+    fix:
+      - Use the CI system's secret store and masking; never print configs with credentials.
+      - Use short-lived, scoped credentials (OIDC to the cloud, virtual keys at the gateway).
+      - Scan logs and rotate any exposed key.
+    detect:
+      - Secret-scanning on CI logs.
+    tradeoff: >-
+      None significant.
+    variant: >-
+      FinTech: a bank's test job logs the credentials for its sandbox core-banking API,
+      which also work in UAT.
+    line: CI logs are public inside the company.
+    related: [ops-19]
+    diagram:
+      bad_label: "Anti-pattern: debug output prints the API key"
+      good_label: "Fix: masked secrets, short-lived scoped creds"
+      bad: [["Debug print", "Full config"], ["Key in log", "Visible"], ["Contractors", "Can read"], ["Key abused", "Within a week"]]
+      good: [["Secret store", "Masked"], ["Short-lived", "OIDC creds"], ["Virtual keys", "Gateway"], ["Log scan", "Rotate"]]
+
+  - id: cicd-15
+    title: Regulated disclosure change shipped without sign-off
+    domain: fintech
+    severity: high
+    tags: [approvals, compliance, release checklist]
+    scenario: >-
+      A bank's assistant explains credit-card APRs. A prompt change that rewords the APR
+      explanation is merged after technical review only. Compliance later finds it no longer
+      states that the penalty APR may apply indefinitely, a required disclosure.
+    analogy: >-
+      Changing the wording on a medicine label without the pharmacist's sign-off.
+    breaks:
+      - Regulated content changed without a compliance gate.
+      - Evals didn't include disclosure checks.
+      - The pipeline had no approval step.
+    root_cause: >-
+      No human sign-off for regulated changes.
+    where: Release governance.
+    fix:
+      - Tag regulated intents and prompts; changes to them require compliance approval in the PR (CODEOWNERS).
+      - Add deterministic disclosure checks (required phrases or facts) to evals.
+      - Keep an approval record linked to the release manifest.
+    detect:
+      - Regulated changes merged without approval.
+    tradeoff: >-
+      Slower changes to regulated journeys; that's the point.
+    variant: >-
+      Telco: a carrier changes its bot's contract-cancellation wording without legal review,
+      breaching consumer-protection rules on cancellation rights.
+    line: Regulated changes need a named approver in the pipeline.
+    related: [gov-03, cicd-02]
+    diagram:
+      bad_label: "Anti-pattern: technical review only for regulated text"
+      good_label: "Fix: compliance CODEOWNERS, disclosure checks, records"
+      bad: [["APR wording", "Changed"], ["Tech review", "Only"], ["Disclosure gone", "Penalty APR"], ["Compliance", "Finding"]]
+      good: [["Tag intents", "Regulated"], ["CODEOWNERS", "Compliance"], ["Disclosure eval", "Required facts"], ["Approval", "In manifest"]]
+
+  - id: cicd-16
+    title: No way to switch off one agent capability
+    domain: telco
+    severity: medium
+    tags: [feature flags, kill switches]
+    scenario: >-
+      A carrier's agent gains the ability to schedule technician visits. A bug double-books
+      technicians. The only option is to roll back the whole release, removing three other
+      improvements, because the capability isn't behind a flag.
+    analogy: >-
+      A house where the only way to turn off one lamp is the main fuse.
+    breaks:
+      - Capabilities ship coupled to the release.
+      - No independent switch per tool or intent.
+      - Rollback is all or nothing.
+    root_cause: >-
+      No feature flags for agent capabilities.
+    where: Release design.
+    fix:
+      - Put new tools, intents and prompts behind feature flags, with per-segment targeting.
+      - Build kill switches per tool and intent, usable by on-call.
+      - Remove flags after full rollout to avoid flag debt.
+    detect:
+      - Share of new capabilities released behind flags.
+    tradeoff: >-
+      Flag management overhead.
+    variant: >-
+      FinTech: a bank can't disable its new payment-scheduling tool without removing the
+      whole assistant release.
+    line: Ship capabilities behind switches.
+    related: [obs-19, cicd-05]
+    diagram:
+      bad_label: "Anti-pattern: capabilities coupled to the release"
+      good_label: "Fix: flag per tool and intent, kill switches"
+      bad: [["New tool", "Scheduling"], ["Bug", "Double-books"], ["No flag", "Coupled"], ["Full rollback", "3 fixes lost"]]
+      good: [["Flag", "Per tool"], ["Kill switch", "On-call"], ["Targeting", "Segments"], ["Remove flags", "After rollout"]]
+
+  - id: cicd-17
+    title: Eval set changed and scores aren't comparable
+    domain: fintech
+    severity: medium
+    tags: [eval versioning, datasets]
+    scenario: >-
+      A bank's eval dataset is a spreadsheet that analysts edit freely. Scores go from 84%
+      to 90% between releases. Half the gain came from someone deleting hard cases they
+      thought were mislabelled.
+    analogy: >-
+      Changing the exam questions and claiming the class got smarter.
+    breaks:
+      - Eval data isn't versioned.
+      - Changes aren't reviewed.
+      - Scores across versions aren't comparable.
+    root_cause: >-
+      Unversioned eval datasets.
+    where: Eval data management.
+    fix:
+      - Version eval datasets in the repository (or a dataset registry) with review for changes.
+      - Report results with the dataset version, and re-baseline when the dataset changes.
+      - Keep a frozen benchmark subset for long-term comparison.
+    detect:
+      - Dataset version recorded on every eval result.
+    tradeoff: >-
+      Review slows dataset fixes slightly.
+    variant: >-
+      Telco: a carrier's care eval set is silently edited, hiding a regression in roaming
+      answers.
+    line: Version the test set like the code.
+    related: [eval-17, tel-16]
+    diagram:
+      bad_label: "Anti-pattern: eval set in a freely edited spreadsheet"
+      good_label: "Fix: versioned, reviewed datasets and frozen subset"
+      bad: [["Spreadsheet", "Free edits"], ["Hard cases", "Deleted"], ["84% to 90%", "Scores"], ["False gain", "Reported"]]
+      good: [["Repo dataset", "Versioned"], ["Review", "Changes"], ["Version tag", "On results"], ["Frozen subset", "Long-term"]]
+
+  - id: cicd-18
+    title: BSS API change breaks the agent's tools in production
+    domain: telco
+    severity: high
+    tags: [contract tests, api changes, tools]
+    scenario: >-
+      The BSS team releases a new version of the customer-account API, renaming a field
+      from accountStatus to status. The agent's tool parses accountStatus, gets null, and
+      treats every account as inactive. The agent tells customers their accounts are
+      suspended.
+    analogy: >-
+      A supplier changing the shape of a part without telling the factory that uses it.
+    breaks:
+      - The agent depends on an API it doesn't own.
+      - No contract tests between teams.
+      - Null was treated as a valid value.
+    root_cause: >-
+      No consumer-driven contract tests for tool dependencies.
+    where: Cross-team CI.
+    fix:
+      - Add consumer-driven contract tests (for example Pact) that run in the BSS team's pipeline.
+      - Validate tool responses strictly; treat missing required fields as errors, not values.
+      - Subscribe to API change notices and pin API versions (TM Forum APIs are versioned).
+    detect:
+      - Tool response validation errors as a metric.
+    tradeoff: >-
+      Contract tests require cross-team agreement.
+    variant: >-
+      FinTech: a core-banking upgrade changes a balance field's sign convention and the
+      agent tells customers they're overdrawn.
+    line: Tools are integrations. Test the contract.
+    related: [tool-09, cicd-03]
+    diagram:
+      bad_label: "Anti-pattern: unguarded dependency on another team's API"
+      good_label: "Fix: contract tests and strict response validation"
+      bad: [["API v2", "Field renamed"], ["Tool parses", "Old name"], ["Null status", "Inactive"], ["'Suspended'", "Told customers"]]
+      good: [["Contract test", "In BSS CI"], ["Strict schema", "Tool response"], ["Missing = error", "Not a value"], ["Pin version", "TMF API"]]
+
+  - id: cicd-19
+    title: Cost regression merged without anyone noticing
+    domain: fintech
+    severity: medium
+    tags: [cost checks, budgets, ci]
+    scenario: >-
+      A refactor of a bank's assistant adds the full account history to every prompt
+      "for better context". Quality evals pass. Token usage per conversation triples, and
+      the monthly bill rises by $40k before finance notices.
+    analogy: >-
+      Approving a building plan without checking the budget.
+    breaks:
+      - CI measures quality but not cost.
+      - Token growth is invisible until the bill.
+      - No budget threshold per change.
+    root_cause: >-
+      Cost not part of the release gate.
+    where: CI eval stage.
+    fix:
+      - Record tokens, cost and latency per eval case, and compare with the baseline in the PR.
+      - Block or require approval when cost per task rises above a threshold.
+      - Track cost per release over time.
+    detect:
+      - Cost delta per PR.
+    tradeoff: >-
+      Some legitimate improvements cost more; the gate asks for approval, not refusal.
+    variant: >-
+      Telco: a prompt change adds the full product catalog to every call and doubles cost.
+    line: Cost is a test result too.
+    related: [eval-14, cost-01]
+    diagram:
+      bad_label: "Anti-pattern: CI checks quality, not cost"
+      good_label: "Fix: cost and latency deltas gate the PR"
+      bad: [["Refactor", "Full history"], ["Quality", "Evals pass"], ["Tokens x3", "Unseen"], ["+$40k", "Monthly"]]
+      good: [["Tokens", "Per eval case"], ["Delta", "Vs baseline"], ["Threshold", "Needs approval"], ["Trend", "Per release"]]
+
+  - id: cicd-20
+    title: Deployment succeeds but the bot can't reach the catalog
+    domain: telco
+    severity: medium
+    tags: [post-deploy verification, smoke tests]
+    scenario: >-
+      A carrier deploys a new bot version. The deployment is marked successful because pods
+      are healthy. A network-policy change blocks access to the product catalog API, so
+      every plan question gets "I can't help with that right now." It takes 3 hours for
+      someone to notice.
+    analogy: >-
+      A restaurant that opens because the lights are on, without checking the kitchen has
+      gas.
+    breaks:
+      - Health checks test the process, not the journeys.
+      - Dependencies aren't verified after deploy.
+      - No automatic rollback on journey failures.
+    root_cause: >-
+      No post-deploy verification of key journeys.
+    where: Deployment pipeline.
+    fix:
+      - Run synthetic journey tests after deploy (top intents end to end, including tool calls).
+      - Check dependency reachability in readiness probes for critical tools.
+      - Roll back automatically if smoke tests fail.
+    detect:
+      - Synthetic journey success rate, continuously.
+    tradeoff: >-
+      Synthetic tests need test accounts in production systems, kept read-only.
+    variant: >-
+      FinTech: a bank's assistant deploys fine but can't reach the card-status API due to
+      an expired certificate.
+    line: Deployed isn't done. Verify the journeys.
+    related: [obs-20, cicd-16]
+    diagram:
+      bad_label: "Anti-pattern: healthy pods means done"
+      good_label: "Fix: post-deploy journey tests with auto-rollback"
+      bad: [["Deploy", "Pods healthy"], ["Catalog API", "Blocked"], ["Plan Qs fail", "Every one"], ["3 hours", "To notice"]]
+      good: [["Smoke tests", "Top journeys"], ["Tool checks", "Reachability"], ["Auto-rollback", "On failure"], ["Synthetic", "Continuous"]]
