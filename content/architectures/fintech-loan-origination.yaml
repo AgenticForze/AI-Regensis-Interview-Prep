@@ -1,0 +1,28 @@
+title: Loan origination assistant
+domain: fintech
+summary: Assistant that gathers application data, pulls bureau reports and recommends approve or decline.
+scenario: >-
+  A lender's assistant collects application details, pulls credit-bureau reports through
+  a legacy integration, reads the credit policy, and recommends approve or decline with
+  reasons that underwriters usually accept. Declines trigger adverse-action letters.
+lanes:
+  - name: Channel
+    nodes:
+      - {id: channel, title: Application, sub: Web + broker, type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: Loan assistant, sub: Recommends decision, type: agent, attrs: {makes_regulated_decision: true, budget: true}}
+      - {id: s2, title: "", type: spacer}
+  - name: Knowledge and tools
+    nodes:
+      - {id: policy_docs, title: Credit policy, sub: Retrieval, type: retriever, attrs: {acl_filter: true}}
+      - {id: bureau, title: Bureau pull, sub: Credit report, type: tool_read, attrs: {legacy: true}}
+      - {id: letter, title: Decision letter, sub: Adverse action, type: tool_write, attrs: {idempotent: true}}
+  - name: Systems of record
+    nodes:
+      - {id: los, title: Loan origination, sub: LOS + bureau, type: system_of_record}
+edges:
+  - {from: channel, to: agent}
+  - {from: letter, to: los}
+bus: {from: agent, to: [policy_docs, bureau, letter]}

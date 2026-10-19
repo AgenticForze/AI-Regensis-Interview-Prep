@@ -1,0 +1,31 @@
+title: B2B order multi-agent system
+domain: telco
+summary: Intake, planner and executor agents that turn enterprise emails and partner requests into orders.
+scenario: >-
+  Enterprise orders arrive as emails and as messages from a wholesale partner's agent. An
+  intake agent extracts the request, a planner agent decomposes it per site, and an
+  executor creates orders (TMF622) in a legacy OSS. Large orders go to an approval queue
+  where account managers see the planner's summary.
+lanes:
+  - name: Inputs
+    nodes:
+      - {id: email, title: Customer email, sub: Order requests, type: channel, attrs: {untrusted_content: true}}
+      - {id: partner, title: Partner agent, sub: Wholesale A2A, type: external_agent}
+  - name: Agents
+    nodes:
+      - {id: agent, title: Planner agent, sub: Per-site plan, type: agent, attrs: {budget: true}}
+      - {id: approval, title: Approval queue, sub: Large orders, type: human_approval}
+  - name: Tools
+    nodes:
+      - {id: quote, title: Quote, sub: CPQ pricing, type: tool_read}
+      - {id: order, title: Create order, sub: TMF622, type: tool_write, attrs: {legacy: true}}
+      - {id: notify, title: Notify, sub: Account manager, type: tool_notify, attrs: {notifies_existing_contacts: true}}
+  - name: Systems of record
+    nodes:
+      - {id: oss, title: Legacy OSS, sub: Orders + inventory, type: system_of_record, attrs: {legacy: true, timeout: true}}
+edges:
+  - {from: email, to: agent}
+  - {from: partner, to: approval}
+  - {from: agent, to: approval, two_way: true}
+  - {from: order, to: oss}
+bus: {from: agent, to: [quote, order, notify]}

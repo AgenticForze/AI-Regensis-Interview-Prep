@@ -1,0 +1,33 @@
+title: SIM-swap agent
+domain: telco
+summary: Agentic assistant in the app and IVR that verifies identity, scores fraud, swaps the SIM in the HSS and confirms.
+scenario: >-
+  Agentic assistant in the app and IVR that handles SIM swap requests (lost or damaged
+  phone, eSIM transfer). It verifies identity, checks a fraud score, updates the HSS/HLR
+  with the new ICCID, and sends a confirmation. SIM swap is the entry point for account
+  takeover: whoever controls the number receives the victim's bank one-time codes.
+lanes:
+  - name: Channel
+    nodes:
+      - {id: channel, title: Customer channel, sub: "App, IVR, chat", type: channel}
+      - {id: s1, title: "", type: spacer}
+  - name: Orchestration
+    nodes:
+      - {id: agent, title: SIM-swap agent, sub: "LLM decides + acts", type: agent, attrs: {budget: true}}
+      - {id: s2, title: "", type: spacer}
+  - name: Tools
+    nodes:
+      - {id: verify, title: Verify ID, sub: OTP or KBA, type: tool_identity, attrs: {auth_strength: weak}}
+      - {id: fraud, title: Fraud score, sub: Risk engine, type: tool_fraud, attrs: {fail_mode: open}}
+      - {id: swap, title: Swap SIM, sub: HSS + ICCID, type: tool_provision, attrs: {irreversible: true}}
+      - {id: notify, title: Notify, sub: SMS to new SIM, type: tool_notify}
+  - name: Systems of record
+    nodes:
+      - {id: sor, title: Systems of record, sub: "CRM, inventory, HSS/HLR, SIM stock", type: system_of_record}
+edges:
+  - {from: channel, to: agent}
+  - {from: verify, to: sor}
+  - {from: fraud, to: sor}
+  - {from: swap, to: sor}
+  - {from: notify, to: sor}
+bus: {from: agent, to: [verify, fraud, swap, notify]}

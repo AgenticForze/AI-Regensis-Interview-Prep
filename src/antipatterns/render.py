@@ -33,10 +33,11 @@ TOP = 20
 
 STYLE = (
     "<style>"
-    ".ln{fill:none;stroke:#B4B2A9;stroke-width:.5;stroke-dasharray:4 4}"
+    ".ln{fill:#FAF9F5;stroke:#B4B2A9;stroke-width:.5;stroke-dasharray:4 4}"
     ".lt{font:500 14px system-ui,-apple-system,Segoe UI,sans-serif;fill:#2C2C2A}"
     ".bt{font:500 14px system-ui,-apple-system,Segoe UI,sans-serif}"
     ".bs{font:400 12px system-ui,-apple-system,Segoe UI,sans-serif}"
+    ".lb{fill:#FAF9F5}"
     ".cap{font:400 12px system-ui,-apple-system,Segoe UI,sans-serif;fill:#5F5E5A}"
     ".ar{stroke:#888780;stroke-width:1.5;fill:none}"
     ".k-bad rect{fill:#FCEBEB;stroke:#A32D2D}.k-bad .bt{fill:#791F1F}.k-bad .bs{fill:#A32D2D}"
@@ -45,7 +46,7 @@ STYLE = (
     ".k-neutral rect{fill:#F1EFE8;stroke:#5F5E5A}.k-neutral .bt{fill:#444441}.k-neutral .bs{fill:#5F5E5A}"
     ".mk circle{fill:#E24B4A;stroke:#A32D2D}.mk text{font:500 12px system-ui,sans-serif;fill:#FFFFFF}"
     "@media (prefers-color-scheme:dark){"
-    ".ln{stroke:#5F5E5A}.lt{fill:#F1EFE8}.cap{fill:#B4B2A9}.ar{stroke:#B4B2A9}"
+    ".ln{fill:#262624;stroke:#5F5E5A}.lt{fill:#F1EFE8}.lb{fill:#262624}.cap{fill:#B4B2A9}.ar{stroke:#B4B2A9}"
     ".k-bad rect{fill:#791F1F;stroke:#F09595}.k-bad .bt{fill:#FCEBEB}.k-bad .bs{fill:#F7C1C1}"
     ".k-good rect{fill:#085041;stroke:#5DCAA5}.k-good .bt{fill:#E1F5EE}.k-good .bs{fill:#9FE1CB}"
     ".k-agent rect{fill:#3C3489;stroke:#AFA9EC}.k-agent .bt{fill:#EEEDFE}.k-agent .bs{fill:#CECBF6}"
@@ -167,7 +168,7 @@ def render_arch(spec: dict) -> str:
     pos = layout_arch(spec)
     nodes = {n["id"]: n for lane in lanes for n in lane["nodes"]}
     h = _lane_y(len(lanes) - 1) + LANE_H + (48 if spec.get("legend") else 20)
-    desc_parts = [f"{lane['name']}: " + ", ".join(n["title"] for n in lane["nodes"] if n.get("kind") != "spacer") for lane in lanes]
+    desc_parts = [f"{lane['name']}: " + ", ".join(n["title"] for n in lane["nodes"] if not _is_spacer(n)) for lane in lanes]
     if spec.get("markers"):
         desc_parts.append(
             "failure markers on " + ", ".join(f"{m['n']} {nodes[m['node']]['title']}" for m in spec["markers"] if m["node"] in nodes)
@@ -175,29 +176,42 @@ def render_arch(spec: dict) -> str:
     out = [_head(h, spec.get("title", "Architecture"), "; ".join(desc_parts))]
 
     for li, lane in enumerate(lanes):
-        y = _lane_y(li)
-        out.append(f'<rect class="ln" x="{LANE_X}" y="{y}" width="{LANE_W}" height="{LANE_H}" rx="12"/>')
-        out.append(f'<text class="lt" x="40" y="{y + 22}">{_e(lane["name"])}</text>')
+        out.append(f'<rect class="ln" x="{LANE_X}" y="{_lane_y(li)}" width="{LANE_W}" height="{LANE_H}" rx="12"/>')
 
     bus = spec.get("bus")
     for e in spec.get("edges", []):
         if e["from"] in pos and e["to"] in pos:
-            out.append(_edge(pos[e["from"]], pos[e["to"]], e.get("two_way", False)))
+            a, b = pos[e["from"]], pos[e["to"]]
+            blocked = a[3] == b[3] and any(
+                o[3] == a[3] and min(a[0], b[0]) < o[0] < max(a[0], b[0])
+                for nid, o in pos.items() if nid not in (e["from"], e["to"]) and not _is_spacer(nodes[nid])
+            )
+            out.append(_edge(a, b, e.get("two_way", False), blocked))
     if bus and bus["from"] in pos:
         out.append(_bus(pos[bus["from"]], [pos[t] for t in bus["to"] if t in pos]))
 
+    for li, lane in enumerate(lanes):
+        tw = len(lane["name"]) * 7.6 + 12
+        out.append(f'<rect class="lb" x="34" y="{_lane_y(li) + 10}" width="{_f(tw)}" height="16" rx="3"/>')
+        out.append(f'<text class="lt" x="40" y="{_lane_y(li) + 22}">{_e(lane["name"])}</text>')
     for lane in lanes:
         for n in lane["nodes"]:
-            if n.get("kind") == "spacer":
+            if _is_spacer(n):
                 continue
             x, y, w, _ = pos[n["id"]]
             out.append(_box(x, y, w, n["title"], n.get("sub", ""), n.get("kind", "neutral")))
 
+    total: dict[str, int] = {}
+    for m in spec.get("markers", []):
+        total[m["node"]] = total.get(m["node"], 0) + 1
+    seen: dict[str, int] = {}
     for m in spec.get("markers", []):
         if m["node"] not in pos:
             continue
         x, y, w, _ = pos[m["node"]]
-        cx, cy = x + w - 4, y + 2
+        k = seen.get(m["node"], 0)
+        seen[m["node"]] = k + 1
+        cx, cy = x + w - 4 - 26 * (total[m["node"]] - 1 - k), y - 3
         out.append(
             f'<g class="mk"><circle cx="{_f(cx)}" cy="{_f(cy)}" r="11" stroke-width=".5"/>'
             f'<text x="{_f(cx)}" y="{_f(cy)}" text-anchor="middle" dominant-baseline="central">{_e(m["n"])}</text></g>'
@@ -208,11 +222,20 @@ def render_arch(spec: dict) -> str:
     return "".join(out)
 
 
-def _edge(a, b, two_way: bool) -> str:
+def _is_spacer(n: dict) -> bool:
+    return n.get("kind") == "spacer" or n.get("type") == "spacer"
+
+
+def _edge(a, b, two_way: bool, blocked: bool = False) -> str:
     ax, ay, aw, al = a
     bx, by, bw, bl = b
     start = ' marker-start="url(#ah)"' if two_way else ""
     end = ' marker-end="url(#ah)"'
+    if al == bl and blocked:  # same lane, boxes in between: route under the row
+        low = ay + BOX_H + 7
+        x1, x2 = ax + aw * 0.75, bx + bw * 0.25 if bx > ax else bx + bw * 0.75
+        d = f"M{_f(x1)} {_f(ay + BOX_H)} L{_f(x1)} {_f(low)} L{_f(x2)} {_f(low)} L{_f(x2)} {_f(ay + BOX_H + 3)}"
+        return f'<path class="ar" d="{d}"{start}{end}/>'
     if al == bl:  # same lane: horizontal between facing edges
         if ax < bx:
             x1, x2 = ax + aw + 2, bx - 3
